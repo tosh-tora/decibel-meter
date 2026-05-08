@@ -83,7 +83,8 @@ class State:
         self.confirm_calib = None      # pending calib before save
 
         # UI misc
-        self.aud_fullscreen = False
+        self.fullscreen     = False
+        self.show_overlay   = False    # Tab: operator overlay on audience view
         self.status_msg     = ""       # one-line status for operator panel
 
 
@@ -198,7 +199,7 @@ def draw_graph(surf, history, area: pygame.Rect):
     gW = area.width  - PAD_L - PAD_R
     gH = area.height - PAD_T - PAD_B
 
-    font_s = pygame.font.SysFont("segoe ui,arial", 13)
+    font_s = pygame.font.SysFont("meiryo,yu gothic,ms gothic,segoe ui,arial", 13)
 
     # y-axis grid & labels
     for g in GRID_DBS:
@@ -427,7 +428,7 @@ def draw_audience(surf, state: State, fonts):
 # ─────────────────────────────────────────────────────────────
 #  Key handling
 # ─────────────────────────────────────────────────────────────
-def handle_key(event, state: State, audio: AudioEngine, aud_win):
+def handle_key(event, state: State, audio: AudioEngine):
     key = event.key
     scr = state.screen
 
@@ -527,11 +528,11 @@ def handle_key(event, state: State, audio: AudioEngine, aud_win):
             _reset_calib(state)
 
         elif key == pygame.K_f:
-            if state.aud_fullscreen:
-                aud_win.set_windowed()
-            else:
-                aud_win.set_fullscreen(desktop=True)
-            state.aud_fullscreen = not state.aud_fullscreen
+            pygame.display.toggle_fullscreen()
+            state.fullscreen = not state.fullscreen
+
+        elif key == pygame.K_TAB:
+            state.show_overlay = not state.show_overlay
 
     return True
 
@@ -554,8 +555,8 @@ def main():
     def sf(names, size, bold=False):
         return pygame.font.SysFont(names, size, bold=bold)
 
-    FONT_NAMES = "segoe ui,arial,helvetica"
-    MONO_NAMES = "consolas,courier new,monospace"
+    FONT_NAMES = "meiryo,yu gothic,ms gothic,segoe ui,arial"
+    MONO_NAMES = "meiryo,ms gothic,consolas,courier new"
 
     fonts = {
         "title":    sf(FONT_NAMES, 22, bold=True),
@@ -567,12 +568,9 @@ def main():
         "aud_unit": sf(FONT_NAMES, 80),
     }
 
-    # ── Windows ──────────────────────────────────────────────
-    op_win  = pygame.Window("Operator",  size=(620, 520), resizable=True)
-    aud_win = pygame.Window("Audience",  size=(1024, 640), resizable=True)
-
-    op_surf  = op_win.get_surface()
-    aud_surf = aud_win.get_surface()
+    # ── Single window ────────────────────────────────────────
+    screen = pygame.display.set_mode((1024, 640), pygame.RESIZABLE)
+    pygame.display.set_caption("Decibel Meter")
 
     # ── State & Audio ─────────────────────────────────────────
     state = State()
@@ -594,46 +592,68 @@ def main():
     running = True
 
     while running:
-        # Snapshot shared state for rendering
-        with state.lock:
-            snap_raw = state.current_raw
-            snap_spl = state.current_spl
-            snap_scr = state.screen
-            snap_hist = list(state.history)
-            snap_run  = state.running
-
         # Events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
                 break
             if event.type == pygame.KEYDOWN:
-                if not handle_key(event, state, audio, aud_win):
+                if not handle_key(event, state, audio):
                     running = False
                     break
-            if event.type == pygame.WINDOWRESIZED:
-                op_surf  = op_win.get_surface()
-                aud_surf = aud_win.get_surface()
 
         if not running:
             break
 
-        # Render operator window
+        # Render
         with state.lock:
-            draw_operator(op_surf, state, fonts)
-        op_win.flip()
+            if state.screen == "main":
+                draw_audience(screen, state, fonts)
+                if state.show_overlay:
+                    _draw_overlay(screen, state, fonts)
+            else:
+                draw_operator(screen, state, fonts)
 
-        # Render audience window
-        aud_surf = aud_win.get_surface()
-        with state.lock:
-            draw_audience(aud_surf, state, fonts)
-        aud_win.flip()
-
+        pygame.display.flip()
         clock.tick(30)
 
     # Cleanup
     audio.stop()
     pygame.quit()
+
+
+def _draw_overlay(surf, state: State, fonts):
+    """Semi-transparent operator info panel (Tab to toggle)."""
+    W, H = surf.get_size()
+    panel_w, panel_h = 340, 180
+    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    panel.fill((10, 10, 10, 210))
+
+    f = fonts["small"]
+    fm = fonts["mono"]
+    lines = [
+        ("OPERATOR",                           (240, 192, 64)),
+        (f"RAW  {state.current_raw:+.1f} dBFS", (160, 160, 160)),
+        (f"SPL  {state.current_spl:.1f} dB",    (210, 210, 210)),
+    ]
+    if state.calib:
+        c = state.calib
+        lines.append((f"calib a={c['a']:.3f}  b={c['b']:.3f}", (80, 80, 80)))
+    lines += [
+        ("",                                   (0, 0, 0)),
+        ("[SPACE] 開始/停止  [R] リセット",      (100, 100, 100)),
+        ("[F] フルスクリーン  [Tab] この画面",   (100, 100, 100)),
+    ]
+
+    y = 10
+    for text, color in lines:
+        img = fm.render(text, True, color) if text else None
+        if img:
+            panel.blit(img, (12, y))
+        y += 22
+
+    pygame.draw.rect(panel, (60, 60, 60), panel.get_rect(), 1)
+    surf.blit(panel, (W - panel_w - 16, 16))
 
 
 if __name__ == "__main__":
