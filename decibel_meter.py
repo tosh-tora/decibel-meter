@@ -191,7 +191,7 @@ def db_color(db):
     return DB_COLORS[-1][1]
 
 
-def draw_graph(surf, history, area: pygame.Rect):
+def draw_graph(surf, history, area: pygame.Rect, font_s):
     """Draw the 120-second dB SPL history graph inside *area*."""
     PAD_L, PAD_R, PAD_T, PAD_B = 46, 14, 10, 24
     gx = area.left + PAD_L
@@ -199,13 +199,11 @@ def draw_graph(surf, history, area: pygame.Rect):
     gW = area.width  - PAD_L - PAD_R
     gH = area.height - PAD_T - PAD_B
 
-    font_s = pygame.font.SysFont("meiryo,yu gothic,ms gothic,segoe ui,arial", 13)
-
     # y-axis grid & labels
     for g in GRID_DBS:
         y = gy + gH - int((g - DB_MIN) / (DB_MAX - DB_MIN) * gH)
-        pygame.draw.line(surf, (22, 22, 22), (gx, y), (gx + gW, y))
-        draw_text(surf, str(g), font_s, (55, 55, 55), gx - 4, y, anchor="midright")
+        pygame.draw.line(surf, (38, 38, 38), (gx, y), (gx + gW, y))
+        draw_text(surf, str(g), font_s, (100, 100, 100), gx - 4, y, anchor="midright")
 
     if len(history) < 2:
         return
@@ -224,8 +222,8 @@ def draw_graph(surf, history, area: pygame.Rect):
     for sec in range(30, HISTORY_SEC + 1, 30):
         x = tx(now - sec)
         if gx <= x <= gx + gW:
-            pygame.draw.line(surf, (20, 20, 20), (x, gy), (x, gy + gH))
-            draw_text(surf, f"-{sec}s", font_s, (45, 45, 45), x, gy + gH + 3, anchor="midtop")
+            pygame.draw.line(surf, (38, 38, 38), (x, gy), (x, gy + gH))
+            draw_text(surf, f"-{sec}s", font_s, (90, 90, 90), x, gy + gH + 3, anchor="midtop")
 
     # filled area (semi-transparent)
     fill = pygame.Surface((area.width, area.height), pygame.SRCALPHA)
@@ -417,12 +415,20 @@ def draw_audience(surf, state: State, fonts):
     surf.blit(unit_surf, (cx + num_surf.get_width(),
                           cy + num_surf.get_height() - unit_surf.get_height()))
 
+    # ── status / start hint ──────────────────────────────────
+    if not state.running:
+        hint = fonts["body"].render("SPACE で計測開始", True, (80, 80, 80))
+        surf.blit(hint, hint.get_rect(center=(W // 2, top_h - 22)))
+    else:
+        dot = fonts["small"].render("● REC", True, C_OK)
+        surf.blit(dot, dot.get_rect(midright=(W - 20, top_h - 18)))
+
     # ── divider ──────────────────────────────────────────────
-    pygame.draw.line(surf, (30, 30, 30), (30, top_h), (W - 30, top_h), 1)
+    pygame.draw.line(surf, (40, 40, 40), (30, top_h), (W - 30, top_h), 1)
 
     # ── Graph (bottom 42%) ───────────────────────────────────
     graph_rect = pygame.Rect(0, top_h + 4, W, H - top_h - 4)
-    draw_graph(surf, state.history, graph_rect)
+    draw_graph(surf, state.history, graph_rect, fonts["small"])
 
 
 # ─────────────────────────────────────────────────────────────
