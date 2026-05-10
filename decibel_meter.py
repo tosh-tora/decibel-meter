@@ -77,10 +77,21 @@ class State:
         # calibration
         self.calib  = None             # {"a": float, "b": float} or None
         self.screen = "startup"        # startup | calib_step1 | calib_step2
-                                       # calib_confirm | main
+                                       # calib_confirm | noise_setup
+                                       # noise_measure | main
         self.calib_pts  = []           # list of (raw_avg, spl_ref) tuples
         self.input_str  = ""           # text input buffer
         self.confirm_calib = None      # pending calib before save
+
+        # noise gate
+        self.nf_settings  = {"duration": 10, "percentile": 10, "margin": 5}
+        self.nf_floor     = None       # measured noise floor dB SPL
+        self.nf_buf       = []         # SPL samples collected during measurement
+        self.nf_measuring = False      # currently measuring?
+        self.nf_start_t   = 0.0        # measurement start time
+        self.nf_cursor    = 0          # selected row in noise_setup (0/1/2)
+        self.nf_frozen    = False      # gate is currently holding display
+        self.nf_frozen_val = 0.0       # last SPL value before freeze
 
         # UI misc
         self.fullscreen     = False
@@ -134,8 +145,31 @@ class AudioEngine:
             else:
                 s.current_spl = smoothed
 
+            # noise floor measurement
+            if s.nf_measuring:
+                s.nf_buf.append(s.current_spl)
+                if now - s.nf_start_t >= s.nf_settings["duration"]:
+                    arr = sorted(s.nf_buf)
+                    idx = max(0, int(len(arr) * s.nf_settings["percentile"] / 100) - 1)
+                    s.nf_floor = arr[idx]
+                    s.nf_measuring = False
+                    s.screen = "main"
+
+            # noise gate
+            if s.nf_floor is not None:
+                threshold = s.nf_floor + s.nf_settings["margin"]
+                if s.current_spl < threshold:
+                    s.nf_frozen = True
+                else:
+                    s.nf_frozen = False
+                    s.nf_frozen_val = s.current_spl
+            else:
+                s.nf_frozen = False
+                s.nf_frozen_val = s.current_spl
+
             if s.running and (now - s._last_hist_t) >= 1.0 / UPDATE_HZ:
-                s.history.append((now, s.current_spl))
+                val = s.nf_frozen_val if s.nf_frozen else s.current_spl
+                s.history.append((now, val))
                 s._last_hist_t = now
 
 
@@ -275,9 +309,11 @@ def draw_operator(surf, state: State, fonts):
         draw_text(surf, f"現在の入力:  {raw:+.1f} dBFS  →  {spl:.1f} dB SPL", f_mono, C_TEXT, W // 2, y, anchor="midtop")
         y += 60
 
-        line("[Enter] そのまま使用してスタート", 40, y, C_OK)
-        y += 30
-        line("[R] 再キャリブレーション", 40, y, C_DIM)
+        line("[Enter] 暗騒音測定へ進む", 40, y, C_OK)
+        y += 26
+        line("[S]  スキップしてスタート", 40, y, C_DIM)
+        y += 26
+        line("[R]  再キャリブレーション", 40, y, C_DIM)
 
     elif scr in ("calib_step1", "calib_step2"):
         step = 1 if scr == "calib_step1" else 2
@@ -337,9 +373,68 @@ def draw_operator(surf, state: State, fonts):
         draw_text(surf, f"現在のプレビュー:  {spl_preview:.1f} dB SPL", f_mono, C_ACCENT, 40, y)
         y += 42
 
-        line("[Enter / S] 保存してスタート", 40, y, C_OK)
+        line("[Enter / S] 保存して次へ（暗騒音測定）", 40, y, C_OK)
         y += 26
         line("[R] やり直し", 40, y, C_DIM)
+
+    elif scr == "noise_setup":
+        draw_text(surf, "暗騒音 測定設定", f_title, C_ACCENT, 40, y)
+        y += 10
+        draw_text(surf, "ホールが静かな状態で実施してください", f_small, C_DIM, 40, y + 30)
+        y += 60
+
+        ROWS = [
+            ("計測時間",   "duration",   "秒",   3, 60,  1),
+            ("パーセンタイル", "percentile", "",  5, 50,  5),
+            ("マージン",   "margin",     "dB",  0, 20,  1),
+        ]
+
+        for i, (label, key, unit, lo, hi, step) in enumerate(ROWS):
+            val  = state.nf_settings[key]
+            sel  = (i == state.nf_cursor)
+            fg   = C_ACCENT if sel else C_TEXT
+            bg_r = pygame.Rect(36, y - 4, W - 72, 36)
+            if sel:
+                pygame.draw.rect(surf, (28, 28, 28), bg_r, border_radius=6)
+                pygame.draw.rect(surf, C_ACCENT, bg_r, 1, border_radius=6)
+            cursor_mark = "▶ " if sel else "  "
+            draw_text(surf, f"{cursor_mark}{label}", f_body, fg, 48, y + 4)
+            draw_text(surf, f"{val} {unit}", f_mono, fg, W - 80, y + 4, anchor="midright")
+            draw_text(surf, f"← →", f_small, C_DIM if not sel else C_ACCENT,
+                      W - 60, y + 4, anchor="midleft")
+            y += 42
+
+        y += 16
+        line("[Enter] 測定開始", 40, y, C_OK);   y += 26
+        line("[S] スキップ（ノイズゲートなし）", 40, y, C_DIM); y += 26
+        line("[R] キャリブレーションからやり直し", 40, y, C_DIM)
+
+    elif scr == "noise_measure":
+        draw_text(surf, "暗騒音 計測中", f_title, C_ACCENT, 40, y)
+        y += 50
+
+        dur     = state.nf_settings["duration"]
+        elapsed = min(time.time() - state.nf_start_t, dur) if state.nf_measuring else dur
+        remain  = max(0.0, dur - elapsed)
+
+        # progress bar
+        bar_rect = pygame.Rect(40, y, W - 80, 28)
+        pygame.draw.rect(surf, (28, 28, 28), bar_rect, border_radius=6)
+        fill_w = int(bar_rect.width * elapsed / dur)
+        if fill_w > 0:
+            pygame.draw.rect(surf, C_ACCENT,
+                             pygame.Rect(bar_rect.left, bar_rect.top, fill_w, bar_rect.height),
+                             border_radius=6)
+        draw_text(surf, f"{remain:.1f} 秒", f_body, C_TEXT,
+                  bar_rect.centerx, bar_rect.centery, anchor="center")
+        y += 48
+
+        draw_text(surf, f"現在: {state.current_spl:.1f} dB SPL", f_mono, C_TEXT, 40, y)
+        y += 28
+        draw_text(surf, f"サンプル数: {len(state.nf_buf)}", f_small, C_DIM, 40, y)
+        y += 42
+
+        line("[S] キャンセル（ノイズゲートなし）", 40, y, C_DIM)
 
     # ── Main screen ──────────────────────────────────────────
     elif scr == "main":
@@ -370,6 +465,7 @@ def draw_operator(surf, state: State, fonts):
 
         keys = [
             ("[SPACE] 開始 / 停止", C_TEXT),
+            ("[N]  暗騒音再測定", C_DIM),
             ("[R]  再キャリブレーション", C_DIM),
             ("[F]  観客画面フルスクリーン切替", C_DIM),
             ("[Q / Esc]  終了", C_DIM),
@@ -404,8 +500,12 @@ def draw_audience(surf, state: State, fonts):
     f_num   = fonts["aud_num"]
     f_unit  = fonts["aud_unit"]
 
+    # noise gate: freeze & dim when below threshold
+    if state.nf_frozen:
+        color = tuple(max(0, c - 80) for c in color)
+
     num_surf  = f_num.render(db_str,  True, color)
-    unit_surf = f_unit.render(" dB",  True, (120, 120, 120))
+    unit_surf = f_unit.render(" dB",  True, (60, 60, 60) if state.nf_frozen else (120, 120, 120))
 
     total_w = num_surf.get_width() + unit_surf.get_width()
     cx = (W - total_w) // 2
@@ -455,7 +555,7 @@ def handle_key(event, state: State, audio: AudioEngine):
 
         if key == pygame.K_RETURN or key == pygame.K_KP_ENTER:
             if scr == "startup":
-                state.screen = "main"
+                state.screen = "noise_setup"
                 audio.start()
                 return True
 
@@ -517,15 +617,49 @@ def handle_key(event, state: State, audio: AudioEngine):
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_s):
             state.calib = state.confirm_calib
             save_calib(state.calib)
-            state.screen = "main"
+            state.screen = "noise_setup"
             audio.start()
         elif key == pygame.K_r:
             _reset_calib(state)
         return True
 
+    elif scr == "noise_setup":
+        ROWS = ["duration", "percentile", "margin"]
+        LIMITS = {"duration": (3, 60, 1), "percentile": (5, 50, 5), "margin": (0, 20, 1)}
+        if key == pygame.K_UP:
+            state.nf_cursor = (state.nf_cursor - 1) % 3
+        elif key == pygame.K_DOWN:
+            state.nf_cursor = (state.nf_cursor + 1) % 3
+        elif key in (pygame.K_RIGHT, pygame.K_EQUALS, pygame.K_PLUS):
+            k = ROWS[state.nf_cursor]
+            lo, hi, step = LIMITS[k]
+            state.nf_settings[k] = min(hi, state.nf_settings[k] + step)
+        elif key in (pygame.K_LEFT, pygame.K_MINUS):
+            k = ROWS[state.nf_cursor]
+            lo, hi, step = LIMITS[k]
+            state.nf_settings[k] = max(lo, state.nf_settings[k] - step)
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            _start_nf_measure(state)
+        elif key == pygame.K_s:
+            state.nf_floor = None
+            state.screen = "main"
+        elif key == pygame.K_r:
+            _reset_calib(state)
+        return True
+
+    elif scr == "noise_measure":
+        if key == pygame.K_s:
+            state.nf_measuring = False
+            state.nf_floor = None
+            state.screen = "main"
+        return True
+
     elif scr == "main":
         if key == pygame.K_SPACE:
             state.running = not state.running
+
+        elif key == pygame.K_n:
+            state.screen = "noise_setup"
 
         elif key == pygame.K_r:
             state.running = False
@@ -549,6 +683,15 @@ def _reset_calib(state: State):
     state.confirm_calib = None
     state.input_str   = ""
     state.calib       = None
+    state.nf_floor    = None
+    state.nf_frozen   = False
+
+
+def _start_nf_measure(state: State):
+    state.nf_buf      = []
+    state.nf_measuring = True
+    state.nf_start_t  = time.time()
+    state.screen      = "noise_measure"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -631,25 +774,28 @@ def main():
 def _draw_overlay(surf, state: State, fonts):
     """Semi-transparent operator info panel (Tab to toggle)."""
     W, H = surf.get_size()
-    panel_w, panel_h = 340, 180
+    panel_w, panel_h = 360, 210
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((10, 10, 10, 210))
 
     f = fonts["small"]
     fm = fonts["mono"]
+    nf = state.nf_floor
+    threshold = f"{nf + state.nf_settings['margin']:.1f}" if nf is not None else "---"
+    gate_str  = f"GATE {threshold} dB {'🔇' if state.nf_frozen else '  '}" if nf is not None else "GATE  off"
+
     lines = [
-        ("OPERATOR",                           (240, 192, 64)),
-        (f"RAW  {state.current_raw:+.1f} dBFS", (160, 160, 160)),
-        (f"SPL  {state.current_spl:.1f} dB",    (210, 210, 210)),
+        ("OPERATOR",                              (240, 192, 64)),
+        (f"RAW  {state.current_raw:+.1f} dBFS",  (160, 160, 160)),
+        (f"SPL  {state.current_spl:.1f} dB",      (210, 210, 210)),
+        (gate_str,                                (100, 180, 100) if not state.nf_frozen else (180, 100, 100)),
+        ("",                                      (0, 0, 0)),
+        ("[SPACE] 開始/停止  [N] 暗騒音測定",      (100, 100, 100)),
+        ("[F] フルスクリーン  [Tab] この画面",      (100, 100, 100)),
     ]
     if state.calib:
         c = state.calib
-        lines.append((f"calib a={c['a']:.3f}  b={c['b']:.3f}", (80, 80, 80)))
-    lines += [
-        ("",                                   (0, 0, 0)),
-        ("[SPACE] 開始/停止  [R] リセット",      (100, 100, 100)),
-        ("[F] フルスクリーン  [Tab] この画面",   (100, 100, 100)),
-    ]
+        lines.insert(4, (f"calib a={c['a']:.3f}  b={c['b']:.3f}", (70, 70, 70)))
 
     y = 10
     for text, color in lines:
