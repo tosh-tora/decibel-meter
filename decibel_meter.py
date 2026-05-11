@@ -97,6 +97,7 @@ class State:
         self.fullscreen     = False
         self.show_overlay   = False    # Tab: operator overlay on audience view
         self.status_msg     = ""       # one-line status for operator panel
+        self.wasapi_exclusive = False  # True when stream opened in WASAPI exclusive mode
 
 
 # ─────────────────────────────────────────────────────────────
@@ -110,20 +111,59 @@ class AudioEngine:
     def start(self):
         if self.stream:
             return
-        self.stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=BLOCK_SIZE,
-            dtype="float32",
-            channels=1,
-            callback=self._callback,
-        )
+        self._open_stream()
         self.stream.start()
+
+    def _open_stream(self):
+        """WASAPI 排他モードを試み、失敗したら共有モードにフォールバックする。
+
+        排他モードでは Windows のノイズ抑制・エコーキャンセル等が
+        バイパスされるためキャリブレーション精度が向上する。
+        他アプリがマイクを占有している場合などは共有モードで動作する。
+        """
+        # ── WASAPI 排他モードを試みる ────────────────────────
+        try:
+            wasapi = sd.WasapiSettings(exclusive=True)
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                blocksize=BLOCK_SIZE,
+                dtype="float32",
+                channels=1,
+                extra_settings=wasapi,
+                callback=self._callback,
+            )
+            self.stream = stream
+            with self.state.lock:
+                self.state.wasapi_exclusive = True
+                self.state.status_msg = "WASAPI 排他モードで起動"
+            return
+        except Exception:
+            pass  # 排他モード取得失敗 → 共有モードへ
+
+        # ── 共有モード（フォールバック）──────────────────────
+        try:
+            self.stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                blocksize=BLOCK_SIZE,
+                dtype="float32",
+                channels=1,
+                callback=self._callback,
+            )
+            with self.state.lock:
+                self.state.wasapi_exclusive = False
+                self.state.status_msg = "共有モードで起動（Windows音声処理が有効）"
+        except Exception as e:
+            with self.state.lock:
+                self.state.status_msg = f"マイク起動失敗: {e}"
+            raise
 
     def stop(self):
         if self.stream:
             self.stream.stop()
             self.stream.close()
             self.stream = None
+            with self.state.lock:
+                self.state.wasapi_exclusive = False
 
     def _callback(self, indata, frames, time_info, status):
         rms = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
@@ -774,7 +814,7 @@ def main():
 def _draw_overlay(surf, state: State, fonts):
     """Semi-transparent operator info panel (Tab to toggle)."""
     W, H = surf.get_size()
-    panel_w, panel_h = 360, 210
+    panel_w, panel_h = 380, 232
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((10, 10, 10, 210))
 
@@ -784,11 +824,19 @@ def _draw_overlay(surf, state: State, fonts):
     threshold = f"{nf + state.nf_settings['margin']:.1f}" if nf is not None else "---"
     gate_str  = f"GATE {threshold} dB {'🔇' if state.nf_frozen else '  '}" if nf is not None else "GATE  off"
 
+    if state.wasapi_exclusive:
+        mode_str  = "WASAPI 排他"
+        mode_col  = (100, 200, 100)
+    else:
+        mode_str  = "共有モード"
+        mode_col  = (200, 140, 60)
+
     lines = [
         ("OPERATOR",                              (240, 192, 64)),
         (f"RAW  {state.current_raw:+.1f} dBFS",  (160, 160, 160)),
         (f"SPL  {state.current_spl:.1f} dB",      (210, 210, 210)),
         (gate_str,                                (100, 180, 100) if not state.nf_frozen else (180, 100, 100)),
+        (f"MIC  {mode_str}",                      mode_col),
         ("",                                      (0, 0, 0)),
         ("[SPACE] 開始/停止  [N] 暗騒音測定",      (100, 100, 100)),
         ("[F] フルスクリーン  [Tab] この画面",      (100, 100, 100)),
