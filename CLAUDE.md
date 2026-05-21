@@ -51,15 +51,23 @@ noise_setup → noise_measure → main
 | `ALPHA` | 0.3 | EMA 平滑化係数（小さいほど滑らか） |
 | `HISTORY_SEC` | 120 | グラフ表示秒数 |
 | `UPDATE_HZ` | 12.5 | グラフ更新レート |
+| `DISP_HZ` | 3.0 | 観客画面の数字更新レート（インターバル内の最大値を表示） |
 | `DB_MIN/MAX` | 20/130 | グラフ Y 軸範囲 |
 | `GRID_DBS` | [30,50,70,90,110,130] | グラフ水平グリッド |
-| `DB_COLORS` | 70/90/110 dB | 色閾値（緑/黄/橙/赤） |
+| `DB_COLORS` | 70/90/110 dB | グラフ・統計値の色閾値（シアングリーン/明黄/明橙/明赤） |
 
 ## キャリブレーション
 
 - 2点: `dB_SPL = a * dB_raw + b`（`calib_from_two_points`）
 - 1点: `a=1.0`, `b = spl_ref - raw_avg`（`calib_from_one_point`）
 - 保存先: `calibration.json`（スクリプトと同階層）
+
+## 観客画面の表示ロジック
+
+- **数字色**: 固定の暖白色 `(255, 250, 200)`。`DB_COLORS` は グラフ折れ線・統計値（最大/最小）の色分けに使用
+- **フォントスケール**: `_get_sysf(size, bold)` でキャッシュ。`num_pt = top_h * 0.88` など比率で算出し、ウィンドウリサイズに追従
+- **セッション統計**: `State.spl_max / spl_min / spl_sum / spl_count` に蓄積。左上（最大）・左下（最小）に表示。`R` キーで `history.clear()` と同時にリセット
+- **表示スロットル**: `DISP_HZ` ごとに `disp_spl` を更新。インターバル内の最大値を `_disp_peak` で追跡して反映
 
 ## ノイズゲート
 
