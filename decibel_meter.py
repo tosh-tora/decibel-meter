@@ -31,6 +31,7 @@ BLOCK_SIZE    = 1024          # ~23 ms per callback
 ALPHA         = 0.3           # EMA smoothing factor
 HISTORY_SEC   = 120
 UPDATE_HZ     = 12.5          # graph data rate
+DISP_HZ       = 3.0           # audience big-number refresh rate (Hz)
 HISTORY_MAX   = int(HISTORY_SEC * UPDATE_HZ)
 RAW_BUF_MAX   = int(3 * UPDATE_HZ)   # 3 s window for calibration snapshot
 
@@ -46,10 +47,10 @@ C_WARN     = (255, 140, 0)
 C_ERR      = (255,  60,  60)
 
 DB_COLORS = [
-    (70,  (76,  219, 110)),
-    (90,  (240, 192, 64)),
-    (110, (255, 140, 0)),
-    (999, (255,  48, 48)),
+    (70,  (0,   255, 180)),   # bright cyan-green
+    (90,  (255, 230,   0)),   # bright yellow
+    (110, (255, 150,   0)),   # bright orange
+    (999, (255,  55,  55)),   # bright red
 ]
 
 GRID_DBS   = [30, 50, 70, 90, 110, 130]
@@ -74,6 +75,11 @@ class State:
         self._last_hist_t     = 0.0
         self.running          = False
 
+        # display throttle (audience big number)
+        self.disp_spl         = 0.0    # rate-limited SPL shown on screen
+        self._last_disp_t     = 0.0
+        self._disp_peak       = 0.0    # peak accumulator within each display interval
+
         # calibration
         self.calib  = None             # {"a": float, "b": float} or None
         self.screen = "startup"        # startup | calib_step1 | calib_step2
@@ -92,6 +98,12 @@ class State:
         self.nf_cursor    = 0          # selected row in noise_setup (0/1/2)
         self.nf_frozen    = False      # gate is currently holding display
         self.nf_frozen_val = 0.0       # last SPL value before freeze
+
+        # session stats (reset when history is cleared)
+        self.spl_max   = None    # max recorded dB SPL this session
+        self.spl_min   = None    # min recorded dB SPL this session
+        self.spl_sum   = 0.0
+        self.spl_count = 0
 
         # UI misc
         self.fullscreen     = False
@@ -207,10 +219,25 @@ class AudioEngine:
                 s.nf_frozen = False
                 s.nf_frozen_val = s.current_spl
 
+            # display throttle: show peak within each interval at DISP_HZ
+            val_now = s.nf_frozen_val if s.nf_frozen else s.current_spl
+            if val_now > s._disp_peak:
+                s._disp_peak = val_now
+            if now - s._last_disp_t >= 1.0 / DISP_HZ:
+                s.disp_spl     = s._disp_peak
+                s._disp_peak   = val_now   # reset with current value
+                s._last_disp_t = now
+
             if s.running and (now - s._last_hist_t) >= 1.0 / UPDATE_HZ:
                 val = s.nf_frozen_val if s.nf_frozen else s.current_spl
                 s.history.append((now, val))
                 s._last_hist_t = now
+                if s.spl_max is None or val > s.spl_max:
+                    s.spl_max = val
+                if s.spl_min is None or val < s.spl_min:
+                    s.spl_min = val
+                s.spl_sum   += val
+                s.spl_count += 1
 
 
 # ─────────────────────────────────────────────────────────────
@@ -251,6 +278,18 @@ def load_calib():
 # ─────────────────────────────────────────────────────────────
 #  Drawing helpers
 # ─────────────────────────────────────────────────────────────
+_FONT_CACHE: dict = {}
+_FONT_NAMES = "meiryo,yu gothic,ms gothic,segoe ui,arial"
+
+
+def _get_sysf(size: int, bold: bool = False) -> pygame.font.Font:
+    """Return a cached SysFont at the given size."""
+    key = (size, bold)
+    if key not in _FONT_CACHE:
+        _FONT_CACHE[key] = pygame.font.SysFont(_FONT_NAMES, size, bold=bold)
+    return _FONT_CACHE[key]
+
+
 def draw_text(surf, text, font, color, x, y, anchor="topleft"):
     img  = font.render(text, True, color)
     rect = img.get_rect(**{anchor: (x, y)})
@@ -528,40 +567,64 @@ def draw_audience(surf, state: State, fonts):
         draw_text(surf, msg, fonts["body"], C_DIM, W // 2, H // 2, anchor="center")
         return
 
+    # ── Dynamic fonts scaled to window size ──────────────────
+    top_h    = int(H * 0.58)
+    num_pt   = max(60, int(top_h * 0.88))
+    unit_pt  = max(24, int(num_pt * 0.30))
+    stat_pt  = max(18, int(num_pt * 0.25))
+    slbl_pt  = max(12, int(num_pt * 0.11))
+    hint_pt  = max(14, int(num_pt * 0.10))
+    rec_pt   = max(10, hint_pt // 2)
+
+    f_num  = _get_sysf(num_pt,  bold=True)
+    f_unit = _get_sysf(unit_pt)
+    f_stat = _get_sysf(stat_pt, bold=True)
+    f_slbl = _get_sysf(slbl_pt)
+    f_hint = _get_sysf(hint_pt)
+
     # ── dB number (top 58%) ──────────────────────────────────
-    top_h = int(H * 0.58)
+    spl    = state.disp_spl          # rate-limited for readability
+    db_str = str(max(0, min(140, round(spl))))
+    color  = (255, 250, 200)         # warm white — visible in dark hall
 
-    spl     = state.current_spl
-    db_val  = max(0, min(140, round(spl)))
-    db_str  = str(db_val)
-    color   = db_color(spl)
-
-    # Dynamically choose font size to fit width
-    f_num   = fonts["aud_num"]
-    f_unit  = fonts["aud_unit"]
-
-    # noise gate: freeze & dim when below threshold
     if state.nf_frozen:
         color = tuple(max(0, c - 80) for c in color)
 
-    num_surf  = f_num.render(db_str,  True, color)
-    unit_surf = f_unit.render(" dB",  True, (60, 60, 60) if state.nf_frozen else (120, 120, 120))
+    num_surf  = f_num.render(db_str, True, color)
+    unit_surf = f_unit.render("dB", True, (60, 60, 60) if state.nf_frozen else (120, 120, 120))
 
-    total_w = num_surf.get_width() + unit_surf.get_width()
-    cx = (W - total_w) // 2
-    cy = (top_h - num_surf.get_height()) // 2 + 10
+    # center the number alone; place "dB" top-aligned just to its right
+    num_x = (W - num_surf.get_width()) // 2
+    num_y = (top_h - num_surf.get_height()) // 2 + 10
 
-    surf.blit(num_surf,  (cx, cy))
-    surf.blit(unit_surf, (cx + num_surf.get_width(),
-                          cy + num_surf.get_height() - unit_surf.get_height()))
+    surf.blit(num_surf,  (num_x, num_y))
+    # "dB" bottom-right of number, clamped above the graph divider
+    unit_x = num_x + num_surf.get_width() + 6
+    unit_y = min(num_y + num_surf.get_height() - unit_surf.get_height(),
+                 top_h - unit_surf.get_height() - 6)
+    surf.blit(unit_surf, (unit_x, unit_y))
+
+    # ── Session stats: top-left (最大) and bottom-left (最小) ──
+    if state.spl_count > 0:
+        left_cx = max(num_x // 2, 50)
+        margin  = max(12, int(top_h * 0.05))
+
+        for label, val, anchor_bottom in [("最大", state.spl_max, False),
+                                           ("最小", state.spl_min, True)]:
+            ls = f_slbl.render(label, True, C_DIM)
+            vs = f_stat.render(str(round(val)), True, db_color(val))
+            block_h = ls.get_height() + 2 + vs.get_height()
+            ty = (top_h - margin - block_h) if anchor_bottom else margin
+            surf.blit(ls, ls.get_rect(centerx=left_cx, top=ty))
+            surf.blit(vs, vs.get_rect(centerx=left_cx, top=ty + ls.get_height() + 2))
 
     # ── status / start hint ──────────────────────────────────
     if not state.running:
-        hint = fonts["body"].render("SPACE で計測開始", True, (80, 80, 80))
-        surf.blit(hint, hint.get_rect(center=(W // 2, top_h - 22)))
+        hint = f_hint.render("SPACE で計測開始", True, (80, 80, 80))
+        surf.blit(hint, hint.get_rect(center=(W // 2, top_h - hint_pt - 4)))
     else:
-        dot = fonts["small"].render("● REC", True, C_OK)
-        surf.blit(dot, dot.get_rect(midright=(W - 20, top_h - 18)))
+        dot = _get_sysf(rec_pt).render("● REC", True, C_ERR)
+        surf.blit(dot, dot.get_rect(midright=(W - 20, top_h - rec_pt - 4)))
 
     # ── divider ──────────────────────────────────────────────
     pygame.draw.line(surf, (40, 40, 40), (30, top_h), (W - 30, top_h), 1)
@@ -704,6 +767,10 @@ def handle_key(event, state: State, audio: AudioEngine):
         elif key == pygame.K_r:
             state.running = False
             state.history.clear()
+            state.spl_max = None
+            state.spl_min = None
+            state.spl_sum = 0.0
+            state.spl_count = 0
             audio.stop()
             _reset_calib(state)
 
