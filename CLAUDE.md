@@ -65,11 +65,12 @@ noise_setup → noise_measure → main
 
 ## 観客画面の表示ロジック
 
+- **上部レイアウト（top_h = H*0.58）**: 二列構成。左＝セッション統計（`stat_col_w`）+ 大型数字（中央帯 `num_cx`、やや左寄り）、右＝大型イラスト+キャプション（`right_w = W*0.36`、`right_cx`）
 - **数字色**: 固定の暖白色 `(255, 250, 200)`。`DB_COLORS` は グラフ折れ線・統計値（最大/最小）・騒音レベルラベルの色分けに使用
-- **フォントスケール**: `_get_sysf(size, bold)` でキャッシュ。`num_pt = (top_h - lbl_band) * 0.88` など比率で算出し、ウィンドウリサイズに追従
-- **セッション統計**: `State.spl_max / spl_min / spl_sum / spl_count` に蓄積。左上（最大）・左下（最小）に表示。`R` キーで `history.clear()` と同時にリセット
+- **フォントスケール**: `_get_sysf(size, bold)` でキャッシュ。`num_pt = top_h * 0.66` を基準に、3桁+dB が中央帯幅（`band_w`）に収まるよう縮小クランプ。ウィンドウリサイズに追従
+- **セッション統計**: `State.spl_max / spl_min / spl_sum / spl_count` に蓄積。左端の列に最大（上）・最小（下）を表示。`R` キーで `history.clear()` と同時にリセット
 - **表示スロットル**: `DISP_HZ` ごとに `disp_spl` を更新。インターバル内の最大値を `_disp_peak` で追跡して反映
-- **騒音レベルラベル**: `noise_label(disp_spl)` で `NOISE_LABELS` から選択し、数字とグラフの間の帯（`lbl_band`）に中央表示。アイコンは `icons/` の白ピクトグラムを `_get_icon()` でキャッシュ読込し `BLEND_RGBA_MULT` で `db_color` にティント。画像がなければテキストのみ。`nf_frozen` 時は数字と同様に減光
+- **騒音レベルラベル**: `noise_label(disp_spl)` で `NOISE_LABELS` から選択し、右列に大きなイラスト（高さ `top_h*0.5`、後方座席からも視認可能）+ キャプションを縦積み表示。アイコンは `icons/` の白ピクトグラムを `_get_icon()` でキャッシュ読込し `BLEND_RGBA_MULT` で `db_color` にティント。キャプションは列幅を超える場合のみ縮小。画像がなければテキストのみ。`nf_frozen` 時は数字と同様に減光
 
 ## ノイズゲート
 

@@ -606,69 +606,80 @@ def draw_audience(surf, state: State, fonts):
         draw_text(surf, msg, fonts["body"], C_DIM, W // 2, H // 2, anchor="center")
         return
 
-    # ── Dynamic fonts scaled to window size ──────────────────
-    top_h    = int(H * 0.58)
-    lbl_band = int(top_h * 0.18)   # noise-level label strip above the divider
-    num_pt   = max(60, int((top_h - lbl_band) * 0.88))
+    # ── Layout: left column = stats + number, right column = illustration ──
+    top_h      = int(H * 0.58)
+    right_w    = int(W * 0.36)                       # right column for the large illustration
+    right_cx   = W - right_w // 2                    # horizontal center of the illustration column
+    stat_col_w = int(W * 0.13)                       # far-left column reserved for max/min
+    num_cx     = (stat_col_w + (W - right_w)) // 2   # number centered in the middle band
+
+    # Number sized to the top area, then clamped so a 3-digit value still fits the band.
+    num_pt   = max(60, int(top_h * 0.66))
+    band_w   = (W - right_w) - stat_col_w - 20
+    ref_w    = _get_sysf(num_pt, bold=True).size("888")[0] \
+               + 6 + _get_sysf(max(24, int(num_pt * 0.30))).size("dB")[0]
+    if ref_w > band_w:
+        num_pt = max(48, int(num_pt * band_w / ref_w))
+
     unit_pt  = max(24, int(num_pt * 0.30))
-    stat_pt  = max(18, int(num_pt * 0.25))
-    slbl_pt  = max(12, int(num_pt * 0.11))
-    hint_pt  = max(14, int(num_pt * 0.10))
+    stat_pt  = max(18, int(num_pt * 0.30))
+    slbl_pt  = max(12, int(num_pt * 0.13))
+    hint_pt  = max(14, int(num_pt * 0.11))
     rec_pt   = max(10, hint_pt // 2)
-    lbl_pt   = max(18, int(num_pt * 0.14))
+    lbl_pt   = max(18, int(top_h * 0.12))            # illustration caption
 
     f_num  = _get_sysf(num_pt,  bold=True)
     f_unit = _get_sysf(unit_pt)
     f_stat = _get_sysf(stat_pt, bold=True)
     f_slbl = _get_sysf(slbl_pt)
     f_hint = _get_sysf(hint_pt)
-    f_lbl  = _get_sysf(lbl_pt,  bold=True)
 
-    # ── dB number (top 58%, minus label strip) ───────────────
+    # ── Big dB number (middle band, shifted left) ────────────
     spl    = state.disp_spl          # rate-limited for readability
     db_str = str(max(0, min(140, round(spl))))
     color  = (255, 250, 200)         # warm white — visible in dark hall
-
     if state.nf_frozen:
         color = tuple(max(0, c - 80) for c in color)
 
     num_surf  = f_num.render(db_str, True, color)
     unit_surf = f_unit.render("dB", True, (60, 60, 60) if state.nf_frozen else (120, 120, 120))
 
-    # center the number alone; place "dB" top-aligned just to its right
-    num_x = (W - num_surf.get_width()) // 2
-    num_y = (top_h - lbl_band - num_surf.get_height()) // 2 + 10
+    combo_w = num_surf.get_width() + 6 + unit_surf.get_width()
+    num_x   = num_cx - combo_w // 2
+    num_y   = (top_h - num_surf.get_height()) // 2 + 10
+    surf.blit(num_surf, (num_x, num_y))
+    surf.blit(unit_surf, (num_x + num_surf.get_width() + 6,
+                          num_y + num_surf.get_height() - unit_surf.get_height()))
 
-    surf.blit(num_surf,  (num_x, num_y))
-    # "dB" bottom-right of number, clamped above the label strip
-    unit_x = num_x + num_surf.get_width() + 6
-    unit_y = min(num_y + num_surf.get_height() - unit_surf.get_height(),
-                 top_h - lbl_band - unit_surf.get_height() - 6)
-    surf.blit(unit_surf, (unit_x, unit_y))
-
-    # ── Noise-level label (icon + text, centered above divider) ──
+    # ── Large illustration + caption (right column) ──────────
     lbl_text, lbl_icon = noise_label(spl)
     lbl_color = db_color(spl)
     if state.nf_frozen:
         lbl_color = tuple(max(0, c - 80) for c in lbl_color)
 
-    lbl_surf = f_lbl.render(lbl_text, True, lbl_color)
-    icon = _get_icon(lbl_icon, int(lbl_pt * 1.5))
-    gap  = 12 if icon else 0
-    row_w = (icon.get_width() if icon else 0) + gap + lbl_surf.get_width()
-    row_x = (W - row_w) // 2
-    row_cy = top_h - lbl_band // 2 - 2
+    icon = _get_icon(lbl_icon, int(top_h * 0.50))    # large — readable from the back rows
 
+    # caption font shrinks only if a long label would overflow the column
+    cap_w = right_w - 24
+    f_lbl = _get_sysf(lbl_pt, bold=True)
+    lbl_surf = f_lbl.render(lbl_text, True, lbl_color)
+    if lbl_surf.get_width() > cap_w:
+        f_lbl = _get_sysf(max(14, int(lbl_pt * cap_w / lbl_surf.get_width())), bold=True)
+        lbl_surf = f_lbl.render(lbl_text, True, lbl_color)
+
+    gap_i   = int(top_h * 0.05)
+    group_h = (icon.get_height() + gap_i if icon else 0) + lbl_surf.get_height()
+    gy      = (top_h - group_h) // 2
     if icon:
         tinted = icon.copy()
         tinted.fill((*lbl_color, 255), special_flags=pygame.BLEND_RGBA_MULT)
-        surf.blit(tinted, tinted.get_rect(left=row_x, centery=row_cy))
-    surf.blit(lbl_surf, lbl_surf.get_rect(
-        left=row_x + (icon.get_width() if icon else 0) + gap, centery=row_cy))
+        surf.blit(tinted, tinted.get_rect(centerx=right_cx, top=gy))
+        gy += icon.get_height() + gap_i
+    surf.blit(lbl_surf, lbl_surf.get_rect(centerx=right_cx, top=gy))
 
-    # ── Session stats: top-left (最大) and bottom-left (最小) ──
+    # ── Session stats: far left (最大 top, 最小 bottom) ──────
     if state.spl_count > 0:
-        left_cx = max(num_x // 2, 50)
+        left_cx = max(stat_col_w // 2, 44)
         margin  = max(12, int(top_h * 0.05))
 
         for label, val, anchor_bottom in [("最大", state.spl_max, False),
@@ -683,7 +694,7 @@ def draw_audience(surf, state: State, fonts):
     # ── status / start hint ──────────────────────────────────
     if not state.running:
         hint = f_hint.render("SPACE で計測開始", True, (80, 80, 80))
-        surf.blit(hint, hint.get_rect(center=(W // 2, top_h - lbl_band - hint_pt - 4)))
+        surf.blit(hint, hint.get_rect(center=(num_cx, top_h - hint_pt - 4)))
     else:
         dot = _get_sysf(rec_pt).render("● REC", True, C_ERR)
         surf.blit(dot, dot.get_rect(midright=(W - 20, top_h - rec_pt - 4)))
