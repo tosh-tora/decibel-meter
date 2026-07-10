@@ -54,7 +54,8 @@ noise_setup → noise_measure → main
 | `DISP_HZ` | 3.0 | 観客画面の数字更新レート（インターバル内の最大値を表示） |
 | `DB_MIN/MAX` | 20/130 | グラフ Y 軸範囲 |
 | `GRID_DBS` | [30,50,70,90,110,130] | グラフ水平グリッド |
-| `DB_COLORS` | 70/90/110 dB | グラフ・統計値の色閾値（シアングリーン/明黄/明橙/明赤） |
+| `DB_COLORS` | 70/90/110 dB | グラフ・統計値・騒音レベルラベルの色閾値（シアングリーン/明黄/明橙/明赤） |
+| `NOISE_LABELS` | 30〜120 dB の7段階 | 騒音レベルラベル（上限dB, テキスト, アイコンファイル名） |
 
 ## キャリブレーション
 
@@ -64,10 +65,11 @@ noise_setup → noise_measure → main
 
 ## 観客画面の表示ロジック
 
-- **数字色**: 固定の暖白色 `(255, 250, 200)`。`DB_COLORS` は グラフ折れ線・統計値（最大/最小）の色分けに使用
-- **フォントスケール**: `_get_sysf(size, bold)` でキャッシュ。`num_pt = top_h * 0.88` など比率で算出し、ウィンドウリサイズに追従
+- **数字色**: 固定の暖白色 `(255, 250, 200)`。`DB_COLORS` は グラフ折れ線・統計値（最大/最小）・騒音レベルラベルの色分けに使用
+- **フォントスケール**: `_get_sysf(size, bold)` でキャッシュ。`num_pt = (top_h - lbl_band) * 0.88` など比率で算出し、ウィンドウリサイズに追従
 - **セッション統計**: `State.spl_max / spl_min / spl_sum / spl_count` に蓄積。左上（最大）・左下（最小）に表示。`R` キーで `history.clear()` と同時にリセット
 - **表示スロットル**: `DISP_HZ` ごとに `disp_spl` を更新。インターバル内の最大値を `_disp_peak` で追跡して反映
+- **騒音レベルラベル**: `noise_label(disp_spl)` で `NOISE_LABELS` から選択し、数字とグラフの間の帯（`lbl_band`）に中央表示。アイコンは `icons/` の白ピクトグラムを `_get_icon()` でキャッシュ読込し `BLEND_RGBA_MULT` で `db_color` にティント。画像がなければテキストのみ。`nf_frozen` 時は数字と同様に減光
 
 ## ノイズゲート
 
@@ -88,8 +90,10 @@ noise_setup → noise_measure → main
 ## ファイル構成
 
 ```
-decibel_meter.py   # アプリ本体（全ロジック）
-requirements.txt   # 依存パッケージ
-calibration.json   # キャリブレーション保存（自動生成）
-specification.md   # 企画仕様書
+decibel_meter.py         # アプリ本体（全ロジック）
+requirements.txt         # 依存パッケージ
+calibration.json         # キャリブレーション保存（自動生成）
+specification.md         # 企画仕様書
+icons/                   # 騒音レベルラベル用アイコン（白ピクトグラム PNG、同名差し替え可）
+tools/generate_icons.py  # 仮アイコンの生成スクリプト
 ```

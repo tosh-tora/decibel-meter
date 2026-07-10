@@ -56,6 +56,19 @@ DB_COLORS = [
 GRID_DBS   = [30, 50, 70, 90, 110, 130]
 DB_MIN, DB_MAX = 20, 130
 
+ICON_DIR = Path(__file__).parent / "icons"
+
+NOISE_LABELS = [
+    # (上限dB, ラベル, アイコンファイル名)
+    (30,  "深夜の住宅地",           "residential.png"),
+    (40,  "静かな図書館",           "library.png"),
+    (60,  "普通の会話",             "conversation.png"),
+    (80,  "掃除機",                 "vacuum.png"),
+    (100, "工事現場",               "construction.png"),
+    (120, "自動車のクラクション",   "horn.png"),
+    (999, "ジェット機エンジンの横", "jet.png"),
+]
+
 
 # ─────────────────────────────────────────────────────────────
 #  State  (shared between audio thread and render thread)
@@ -302,6 +315,32 @@ def db_color(db):
         if db < threshold:
             return color
     return DB_COLORS[-1][1]
+
+
+def noise_label(db):
+    """Return (label, icon_filename) for the given dB SPL."""
+    for threshold, label, icon in NOISE_LABELS:
+        if db < threshold:
+            return label, icon
+    return NOISE_LABELS[-1][1], NOISE_LABELS[-1][2]
+
+
+_ICON_CACHE: dict = {}
+
+
+def _get_icon(filename: str, height: int):
+    """Return the icon Surface scaled to *height*, or None if unavailable."""
+    key = (filename, height)
+    if key not in _ICON_CACHE:
+        surf = None
+        try:
+            img = pygame.image.load(str(ICON_DIR / filename)).convert_alpha()
+            w = max(1, int(img.get_width() * height / img.get_height()))
+            surf = pygame.transform.smoothscale(img, (w, height))
+        except Exception:
+            pass  # 画像なし・読込失敗はテキストのみ表示
+        _ICON_CACHE[key] = surf
+    return _ICON_CACHE[key]
 
 
 def draw_graph(surf, history, area: pygame.Rect, font_s):
@@ -569,20 +608,23 @@ def draw_audience(surf, state: State, fonts):
 
     # ── Dynamic fonts scaled to window size ──────────────────
     top_h    = int(H * 0.58)
-    num_pt   = max(60, int(top_h * 0.88))
+    lbl_band = int(top_h * 0.18)   # noise-level label strip above the divider
+    num_pt   = max(60, int((top_h - lbl_band) * 0.88))
     unit_pt  = max(24, int(num_pt * 0.30))
     stat_pt  = max(18, int(num_pt * 0.25))
     slbl_pt  = max(12, int(num_pt * 0.11))
     hint_pt  = max(14, int(num_pt * 0.10))
     rec_pt   = max(10, hint_pt // 2)
+    lbl_pt   = max(18, int(num_pt * 0.14))
 
     f_num  = _get_sysf(num_pt,  bold=True)
     f_unit = _get_sysf(unit_pt)
     f_stat = _get_sysf(stat_pt, bold=True)
     f_slbl = _get_sysf(slbl_pt)
     f_hint = _get_sysf(hint_pt)
+    f_lbl  = _get_sysf(lbl_pt,  bold=True)
 
-    # ── dB number (top 58%) ──────────────────────────────────
+    # ── dB number (top 58%, minus label strip) ───────────────
     spl    = state.disp_spl          # rate-limited for readability
     db_str = str(max(0, min(140, round(spl))))
     color  = (255, 250, 200)         # warm white — visible in dark hall
@@ -595,14 +637,34 @@ def draw_audience(surf, state: State, fonts):
 
     # center the number alone; place "dB" top-aligned just to its right
     num_x = (W - num_surf.get_width()) // 2
-    num_y = (top_h - num_surf.get_height()) // 2 + 10
+    num_y = (top_h - lbl_band - num_surf.get_height()) // 2 + 10
 
     surf.blit(num_surf,  (num_x, num_y))
-    # "dB" bottom-right of number, clamped above the graph divider
+    # "dB" bottom-right of number, clamped above the label strip
     unit_x = num_x + num_surf.get_width() + 6
     unit_y = min(num_y + num_surf.get_height() - unit_surf.get_height(),
-                 top_h - unit_surf.get_height() - 6)
+                 top_h - lbl_band - unit_surf.get_height() - 6)
     surf.blit(unit_surf, (unit_x, unit_y))
+
+    # ── Noise-level label (icon + text, centered above divider) ──
+    lbl_text, lbl_icon = noise_label(spl)
+    lbl_color = db_color(spl)
+    if state.nf_frozen:
+        lbl_color = tuple(max(0, c - 80) for c in lbl_color)
+
+    lbl_surf = f_lbl.render(lbl_text, True, lbl_color)
+    icon = _get_icon(lbl_icon, int(lbl_pt * 1.5))
+    gap  = 12 if icon else 0
+    row_w = (icon.get_width() if icon else 0) + gap + lbl_surf.get_width()
+    row_x = (W - row_w) // 2
+    row_cy = top_h - lbl_band // 2 - 2
+
+    if icon:
+        tinted = icon.copy()
+        tinted.fill((*lbl_color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(tinted, tinted.get_rect(left=row_x, centery=row_cy))
+    surf.blit(lbl_surf, lbl_surf.get_rect(
+        left=row_x + (icon.get_width() if icon else 0) + gap, centery=row_cy))
 
     # ── Session stats: top-left (最大) and bottom-left (最小) ──
     if state.spl_count > 0:
@@ -621,7 +683,7 @@ def draw_audience(surf, state: State, fonts):
     # ── status / start hint ──────────────────────────────────
     if not state.running:
         hint = f_hint.render("SPACE で計測開始", True, (80, 80, 80))
-        surf.blit(hint, hint.get_rect(center=(W // 2, top_h - hint_pt - 4)))
+        surf.blit(hint, hint.get_rect(center=(W // 2, top_h - lbl_band - hint_pt - 4)))
     else:
         dot = _get_sysf(rec_pt).render("● REC", True, C_ERR)
         surf.blit(dot, dot.get_rect(midright=(W - 20, top_h - rec_pt - 4)))
