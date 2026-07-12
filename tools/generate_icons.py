@@ -60,26 +60,75 @@ def conversation():
     return s
 
 
-def vacuum():
-    """掃除機（キャニスター型）"""
+def cicada():
+    """セミ（上面図・騒音をまき散らすセミの鳴き声）"""
     s = new_surf()
-    pygame.draw.ellipse(s, W, pygame.Rect(48, 70, 66, 44))             # 本体
-    pygame.draw.circle(s, (0, 0, 0, 0), (81, 92), 10)                  # 車輪穴
-    # ホース + 持ち手 + ノズル
-    pygame.draw.lines(s, W, False, [(56, 76), (34, 36), (18, 44)], 8)
-    pygame.draw.rect(s, W, pygame.Rect(6, 96, 40, 10))                 # 床ノズル
-    pygame.draw.line(s, W, (18, 48), (22, 96), 8)                      # パイプ
+
+    # ── 騒音（周囲に散らす稲妻）────────────────────────────
+    bolt = pygame.Surface((26, 34), pygame.SRCALPHA)
+    pygame.draw.polygon(bolt, W, [(16, 0), (4, 20), (13, 20), (6, 34),
+                                  (24, 13), (14, 13), (20, 0)])
+    for bx, by, ang in [(20, 24, 40), (13, 62, 90), (20, 100, -40),
+                        (108, 24, -40), (115, 62, -90), (108, 100, 40)]:
+        rb = pygame.transform.rotate(bolt, ang)
+        s.blit(rb, rb.get_rect(center=(bx, by)))
+
+    # ── 脚（6本・先に描いて翅で根元を隠す）───────────────
+    for x0, y0, x1, y1, x2, y2 in [(54, 34, 42, 26, 34, 28),
+                                   (54, 42, 40, 42, 32, 46),
+                                   (55, 50, 43, 56, 36, 62)]:
+        pygame.draw.lines(s, W, False, [(x0, y0), (x1, y1), (x2, y2)], 3)
+        pygame.draw.lines(s, W, False,
+                          [(128 - x0, y0), (128 - x1, y1), (128 - x2, y2)], 3)
+
+    # ── 翅（左右の大きな翅）──────────────────────────────
+    wingL = [(60, 36), (48, 44), (38, 66), (40, 92), (52, 110), (61, 84), (62, 54)]
+    wingR = [(128 - x, y) for x, y in wingL]
+    pygame.draw.polygon(s, W, wingL)
+    pygame.draw.polygon(s, W, wingR)
+    # 翅脈（控えめなクロスハッチ・抜き。白い翅部分だけが切り取られる）
+    for k in range(5):
+        x = 34 + k * 10
+        pygame.draw.line(s, (0, 0, 0, 0), (x, 44), (x + 22, 108), 1)
+        pygame.draw.line(s, (0, 0, 0, 0), (x + 22, 44), (x, 108), 1)
+        pygame.draw.line(s, (0, 0, 0, 0), (128 - x, 44), (106 - x, 108), 1)
+        pygame.draw.line(s, (0, 0, 0, 0), (106 - x, 44), (128 - x, 108), 1)
+
+    # ── 胴体（胸部＋節のある腹部）────────────────────────
+    pygame.draw.polygon(s, W, [(58, 44), (70, 44), (67, 96), (64, 106), (61, 96)])
+    for y in (54, 66, 78, 90):
+        pygame.draw.line(s, (0, 0, 0, 0), (59, y), (69, y), 2)
+    pygame.draw.ellipse(s, W, pygame.Rect(52, 28, 24, 18))
+
+    # ── 頭部・触角・複眼（大きなつぶらな目）──────────────
+    pygame.draw.ellipse(s, W, pygame.Rect(50, 14, 28, 18))
+    pygame.draw.lines(s, W, False, [(58, 16), (52, 6), (45, 4)], 2)
+    pygame.draw.lines(s, W, False, [(70, 16), (76, 6), (83, 4)], 2)
+    for ex in (51, 77):
+        pygame.draw.circle(s, W, (ex, 18), 10)
+        pygame.draw.circle(s, (0, 0, 0, 0), (ex, 18), 5)               # 瞳（抜き）
+        pygame.draw.circle(s, W, (ex - 2, 15), 2)                      # ハイライト
     return s
 
 
 def construction():
-    """ヘルメット（工事現場）"""
+    """ブルドーザー（工事現場）"""
     s = new_surf()
-    # ドーム
-    pygame.draw.ellipse(s, W, pygame.Rect(24, 34, 80, 62))
-    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(0, 66, SIZE, 62))    # 下半分カット
-    pygame.draw.rect(s, W, pygame.Rect(56, 24, 16, 18), border_radius=4)  # 頂部リブ
-    pygame.draw.rect(s, W, pygame.Rect(10, 64, 108, 14), border_radius=7)  # つば
+    # クローラー（履帯）
+    pygame.draw.rect(s, W, pygame.Rect(26, 94, 82, 24), border_radius=12)
+    for cx in (42, 60, 78, 96):                                       # 転輪（穴）
+        pygame.draw.circle(s, (0, 0, 0, 0), (cx, 108), 6)
+    # 車体（エンジンフード）
+    pygame.draw.polygon(s, W, [(40, 80), (48, 62), (90, 62), (90, 94), (40, 94)])
+    # 運転席（キャブ）
+    pygame.draw.rect(s, W, pygame.Rect(64, 44, 28, 20), border_radius=3)
+    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(70, 50, 14, 12))    # 窓（抜き）
+    # 排気筒
+    pygame.draw.rect(s, W, pygame.Rect(54, 46, 7, 18))
+    pygame.draw.rect(s, W, pygame.Rect(52, 42, 11, 6), border_radius=2)  # キャップ
+    # 排土板（ブレード）
+    pygame.draw.polygon(s, W, [(20, 58), (32, 62), (32, 104), (26, 112), (14, 108), (12, 64)])
+    pygame.draw.line(s, W, (32, 90), (50, 80), 7)                     # プッシュアーム
     return s
 
 
@@ -119,7 +168,7 @@ ICONS = {
     "residential.png":  residential,
     "library.png":      library,
     "conversation.png": conversation,
-    "vacuum.png":       vacuum,
+    "cicada.png":       cicada,
     "construction.png": construction,
     "horn.png":         horn,
     "jet.png":          jet,

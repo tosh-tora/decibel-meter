@@ -63,7 +63,7 @@ NOISE_LABELS = [
     (30,  "深夜の住宅地",           "residential.png"),
     (40,  "静かな図書館",           "library.png"),
     (60,  "普通の会話",             "conversation.png"),
-    (80,  "掃除機",                 "vacuum.png"),
+    (80,  "セミの鳴き声",           "cicada.png"),
     (100, "工事現場",               "construction.png"),
     (120, "自動車のクラクション",   "horn.png"),
     (999, "ジェット機エンジンの横", "jet.png"),
