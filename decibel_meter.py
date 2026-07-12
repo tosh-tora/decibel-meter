@@ -642,7 +642,9 @@ def draw_audience(surf, state: State, fonts):
         color = tuple(max(0, c - 80) for c in color)
 
     num_surf  = f_num.render(db_str, True, color)
-    unit_surf = f_unit.render("dB", True, (60, 60, 60) if state.nf_frozen else (120, 120, 120))
+    # unit brighter (warm off-white) so it's legible from the back rows
+    unit_col  = (150, 148, 120) if state.nf_frozen else (215, 210, 170)
+    unit_surf = f_unit.render("dB", True, unit_col)
 
     combo_w = num_surf.get_width() + 6 + unit_surf.get_width()
     num_x   = num_cx - combo_w // 2
@@ -684,7 +686,7 @@ def draw_audience(surf, state: State, fonts):
 
         for label, val, anchor_bottom in [("最大", state.spl_max, False),
                                            ("最小", state.spl_min, True)]:
-            ls = f_slbl.render(label, True, C_DIM)
+            ls = f_slbl.render(label, True, (215, 212, 195))   # bright: readable from a distance
             vs = f_stat.render(str(round(val)), True, db_color(val))
             block_h = ls.get_height() + 2 + vs.get_height()
             ty = (top_h - margin - block_h) if anchor_bottom else margin
