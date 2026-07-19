@@ -29,9 +29,10 @@ import sounddevice as sd
 SAMPLE_RATE   = 44100
 BLOCK_SIZE    = 1024          # ~23 ms per callback
 ALPHA         = 0.3           # EMA smoothing factor
-HISTORY_SEC   = 120
+HISTORY_SEC   = 60
 UPDATE_HZ     = 12.5          # graph data rate
 DISP_HZ       = 3.0           # audience big-number refresh rate (Hz)
+UPDATE_FLASH_SEC = 0.8        # 最大/最小 更新フラッシュの表示秒数
 HISTORY_MAX   = int(HISTORY_SEC * UPDATE_HZ)
 RAW_BUF_MAX   = int(3 * UPDATE_HZ)   # 3 s window for calibration snapshot
 
@@ -53,20 +54,30 @@ DB_COLORS = [
     (999, (255,  55,  55)),   # bright red
 ]
 
+# アイコン・ラベル用の連続グラデーション（遠くから見える明るめの色）
+DB_GRADIENT = [
+    # (dB, color) — 青 → 緑 → 黄 → 橙 → 赤 を線形補間
+    (40,  (100, 185, 255)),   # bright blue
+    (65,  (90,  235, 130)),   # bright green
+    (85,  (255, 230,  80)),   # bright yellow
+    (105, (255, 160,  60)),   # bright orange
+    (120, (255,  85,  85)),   # bright red
+]
+
 GRID_DBS   = [30, 50, 70, 90, 110, 130]
 DB_MIN, DB_MAX = 20, 130
 
 ICON_DIR = Path(__file__).parent / "icons"
 
 NOISE_LABELS = [
-    # (上限dB, ラベル, アイコンファイル名)
-    (30,  "深夜の住宅地",           "residential.png"),
-    (40,  "静かな図書館",           "library.png"),
-    (60,  "普通の会話",             "conversation.png"),
-    (80,  "セミの鳴き声",           "cicada.png"),
-    (100, "工事現場",               "construction.png"),
-    (120, "自動車のクラクション",   "horn.png"),
-    (999, "ジェット機エンジンの横", "jet.png"),
+    # (上限dB, 大人ラベル, 大人アイコン, 子どもラベル, 子どもアイコン)
+    (30,  "深夜の住宅地",           "residential.png",  "ひそひそごえ",               "whisper.png"),
+    (40,  "静かな図書館",           "library.png",      "しずかなおへや",             "library.png"),
+    (60,  "普通の会話",             "conversation.png", "はなしごえ",                 "conversation.png"),
+    (80,  "セミの鳴き声",           "cicada.png",       "せみのなきごえ",             "cicada.png"),
+    (100, "工事現場",               "construction.png", "こうじげんば",               "construction.png"),
+    (120, "自動車のクラクション",   "horn.png",         "きゅうきゅうしゃのサイレン", "ambulance.png"),
+    (999, "ジェット機エンジンの横", "jet.png",          "ひこうき",                   "jet.png"),
 ]
 
 
@@ -115,10 +126,14 @@ class State:
         # session stats (reset when history is cleared)
         self.spl_max   = None    # max recorded dB SPL this session
         self.spl_min   = None    # min recorded dB SPL this session
+        self.spl_max_t = 0.0     # time.time() when spl_max last updated (更新フラッシュ用)
+        self.spl_min_t = 0.0     # time.time() when spl_min last updated
         self.spl_sum   = 0.0
         self.spl_count = 0
 
         # UI misc
+        self.aud_mode       = "kids"   # audience view mode: "kids" (大人・子ども) | "adult" (大人)
+        self.ladder_pos     = 0.0      # smoothed marker dB on the noise ladder (render thread only)
         self.fullscreen     = False
         self.show_overlay   = False    # Tab: operator overlay on audience view
         self.status_msg     = ""       # one-line status for operator panel
@@ -241,14 +256,21 @@ class AudioEngine:
                 s._disp_peak   = val_now   # reset with current value
                 s._last_disp_t = now
 
+            # 最大/最小は毎コールバック（表示ピークと同じ val_now）で追跡する。
+            # 履歴サンプリング間隔（1/UPDATE_HZ）でのみ更新すると、その隙間に出た
+            # 瞬間ピークが表示値に反映されても max に拾われず取りこぼす。
+            if s.running:
+                if s.spl_max is None or val_now > s.spl_max:
+                    s.spl_max = val_now
+                    s.spl_max_t = now
+                if s.spl_min is None or val_now < s.spl_min:
+                    s.spl_min = val_now
+                    s.spl_min_t = now
+
             if s.running and (now - s._last_hist_t) >= 1.0 / UPDATE_HZ:
                 val = s.nf_frozen_val if s.nf_frozen else s.current_spl
                 s.history.append((now, val))
                 s._last_hist_t = now
-                if s.spl_max is None or val > s.spl_max:
-                    s.spl_max = val
-                if s.spl_min is None or val < s.spl_min:
-                    s.spl_min = val
                 s.spl_sum   += val
                 s.spl_count += 1
 
@@ -317,12 +339,28 @@ def db_color(db):
     return DB_COLORS[-1][1]
 
 
-def noise_label(db):
-    """Return (label, icon_filename) for the given dB SPL."""
-    for threshold, label, icon in NOISE_LABELS:
-        if db < threshold:
-            return label, icon
-    return NOISE_LABELS[-1][1], NOISE_LABELS[-1][2]
+def db_color_smooth(db):
+    """DB_GRADIENT を線形補間した色を返す（アイコン・キャプション用）。"""
+    pts = DB_GRADIENT
+    if db <= pts[0][0]:
+        return pts[0][1]
+    for (d0, c0), (d1, c1) in zip(pts, pts[1:]):
+        if db < d1:
+            t = (db - d0) / (d1 - d0)
+            return tuple(int(a + (b - a) * t) for a, b in zip(c0, c1))
+    return pts[-1][1]
+
+
+def noise_label(db, mode="adult"):
+    """Return (label, icon_filename) for the given dB SPL and display mode."""
+    for entry in NOISE_LABELS:
+        if db < entry[0]:
+            break
+    else:
+        entry = NOISE_LABELS[-1]
+    if mode == "kids":
+        return entry[3], entry[4]
+    return entry[1], entry[2]
 
 
 _ICON_CACHE: dict = {}
@@ -366,8 +404,21 @@ def draw_graph(surf, history, area: pygame.Rect, font_s):
     def tx(t):  return gx + int(gW * max(0.0, 1.0 - (now - t) / span))
     def ty(db): return gy + gH - int((db - DB_MIN) / (DB_MAX - DB_MIN) * gH)
 
-    pts = [(tx(t), ty(db)) for t, db in history if now - t <= span]
-    if len(pts) < 2:
+    # 折れ線を切れ目マーカー（db=None、計測再開時に挿入）で区切り、
+    # 計測終了→再開をまたぐ点を線でつながない
+    segments = []
+    seg = []
+    for t, db in history:
+        if db is None:
+            if len(seg) >= 1:
+                segments.append(seg)
+            seg = []
+        elif now - t <= span:
+            seg.append((tx(t), ty(db)))
+    if seg:
+        segments.append(seg)
+
+    if not any(len(s) >= 2 for s in segments):
         return
 
     # x-axis time labels
@@ -377,18 +428,22 @@ def draw_graph(surf, history, area: pygame.Rect, font_s):
             pygame.draw.line(surf, (38, 38, 38), (x, gy), (x, gy + gH))
             draw_text(surf, f"-{sec}s", font_s, (90, 90, 90), x, gy + gH + 3, anchor="midtop")
 
-    # filled area (semi-transparent)
+    # filled area + stroke（セグメントごとに独立して描画）
     fill = pygame.Surface((area.width, area.height), pygame.SRCALPHA)
-    offset = (area.left, area.top)
-    shifted = [(p[0] - offset[0], p[1] - offset[1]) for p in pts]
+    offset  = (area.left, area.top)
     floor_y = gy + gH - area.top
-    fill_pts = shifted + [(shifted[-1][0], floor_y), (shifted[0][0], floor_y)]
-    if len(fill_pts) >= 3:
-        pygame.draw.polygon(fill, (240, 192, 64, 38), fill_pts)
+    for pts in segments:
+        if len(pts) < 2:
+            continue
+        shifted = [(p[0] - offset[0], p[1] - offset[1]) for p in pts]
+        fill_pts = shifted + [(shifted[-1][0], floor_y), (shifted[0][0], floor_y)]
+        if len(fill_pts) >= 3:
+            pygame.draw.polygon(fill, (240, 192, 64, 38), fill_pts)
     surf.blit(fill, area.topleft)
 
-    # stroke
-    pygame.draw.lines(surf, C_ACCENT, False, pts, 2)
+    for pts in segments:
+        if len(pts) >= 2:
+            pygame.draw.lines(surf, C_ACCENT, False, pts, 2)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -596,6 +651,137 @@ def draw_operator(surf, state: State, fonts):
 # ─────────────────────────────────────────────────────────────
 #  Screen: Audience window
 # ─────────────────────────────────────────────────────────────
+def _draw_level_group(surf, cx, top_h, icon_file, text, color, icon_h, cap_w, lbl_pt):
+    """大型アイコン + キャプションを縦積みで cx 中心に描く（観客画面 両モード共用）。"""
+    icon  = _get_icon(icon_file, icon_h)
+    f_lbl = _get_sysf(lbl_pt, bold=True)
+    lbl_surf = f_lbl.render(text, True, color)
+    if lbl_surf.get_width() > cap_w:
+        f_lbl = _get_sysf(max(14, int(lbl_pt * cap_w / lbl_surf.get_width())), bold=True)
+        lbl_surf = f_lbl.render(text, True, color)
+
+    gap_i   = int(top_h * 0.05)
+    group_h = (icon.get_height() + gap_i if icon else 0) + lbl_surf.get_height()
+    gy      = (top_h - group_h) // 2
+    if icon:
+        tinted = icon.copy()
+        tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(tinted, tinted.get_rect(centerx=cx, top=gy))
+        gy += icon.get_height() + gap_i
+    surf.blit(lbl_surf, lbl_surf.get_rect(centerx=cx, top=gy))
+
+
+def draw_noise_ladder(surf, state: State, rect: pygame.Rect, spl):
+    """はしご型たとえメーター（大人・子どもモード）。
+
+    NOISE_LABELS 全7段の小アイコンを dB リニア軸上に縦積みし、現在レベルの
+    マーカーとセッション最大/最小（レンジ帯＋数値ラベル）を統合表示する。
+    """
+    x0, y0, w, h = rect
+
+    def ty(db):
+        db = max(DB_MIN, min(DB_MAX, db))
+        return y0 + h - int((db - DB_MIN) / (DB_MAX - DB_MIN) * h)
+
+    lw     = int(w * 0.40)             # 左列: 最大/最小の数値ラベル（詰めて icon 側に幅を回す）
+    lad_x  = x0 + lw                   # はしご本体（アイコン・帯・目盛り）の左端
+    lad_w  = w - lw
+    icx    = lad_x + int(lad_w * 0.32) # icon column center（右の dB 数字と重ならないよう左に寄せる）
+    row_r  = lad_x + int(lad_w * 0.58) # boundary line right edge（大きい dB 数字の余白を確保）
+    band_w = row_r - lad_x             # 網掛け帯・最大/最小キャップ線はメーターの線幅に合わせる
+
+    has_stats = (state.spl_count > 0 and
+                 state.spl_max is not None and state.spl_min is not None)
+
+    # session min–max range band (behind everything)
+    if has_stats:
+        by0, by1 = ty(state.spl_max), ty(state.spl_min)
+        band = pygame.Surface((band_w, max(2, by1 - by0)), pygame.SRCALPHA)
+        band.fill((255, 250, 200, 42))
+        surf.blit(band, (lad_x, by0))
+
+    # rung icons + boundary ticks（1.5倍サイズ、間隔は詰める）
+    f_tick  = _get_sysf(max(16, int(h * 0.0675)))
+    base_ih = max(22, int(h * 0.1125))
+    matched = False
+    lo = DB_MIN
+    for entry in NOISE_LABELS:
+        hi = min(entry[0], DB_MAX)
+        active  = (not matched) and (spl < entry[0] or entry is NOISE_LABELS[-1])
+        matched = matched or active
+
+        color = db_color_smooth(spl) if active else (150, 150, 150)
+        if active and state.nf_frozen:
+            color = tuple(max(0, c - 80) for c in color)
+
+        band_px = max(1, ty(lo) - ty(hi))          # 狭い帯（10dB刻み）でアイコンが被らないようクランプ
+        want_ih = int(base_ih * 1.3) if active else base_ih
+        icon = _get_icon(entry[4], max(10, min(want_ih, band_px - 4)))
+        if icon:
+            tinted = icon.copy()
+            tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(tinted, tinted.get_rect(center=(icx, (ty(lo) + ty(hi)) // 2)))
+
+        if entry[0] < DB_MAX:            # boundary tick + dB number (大人向け)
+            yb = ty(entry[0])
+            pygame.draw.line(surf, (70, 70, 70), (lad_x, yb), (row_r, yb), 1)
+            tick = f_tick.render(str(entry[0]), True, (150, 150, 150))
+            surf.blit(tick, tick.get_rect(midright=(x0 + w, yb)))
+        lo = hi
+
+    # 最大 / 最小: レンジ帯の上下端にキャップ線 + 左列に数値のみ表示
+    #   凡例（"max ~ min"）は各値に追随させず、メーター上部に固定表示して
+    #   数字・メーター本体との重なりを避ける
+    if has_stats:
+        f_legend = _get_sysf(max(13, int(h * 0.032)))
+        legend = f_legend.render("max ~ min", True, (170, 168, 150))
+        surf.blit(legend, legend.get_rect(topright=(lad_x - 6, y0)))
+
+        f_mm_val = _get_sysf(max(22, int(h * 0.090)), bold=True)
+        now_t = time.time()
+        for val, upd_t in [(state.spl_max, state.spl_max_t),
+                           (state.spl_min, state.spl_min_t)]:
+            yv  = ty(val)
+            col = db_color_smooth(val)
+            pygame.draw.line(surf, col, (lad_x, yv), (row_r, yv), 3)
+            vs = f_mm_val.render(str(round(val)), True, col)
+            by = max(y0 + legend.get_height() + 4,
+                     min(y0 + h - vs.get_height(), yv - vs.get_height() // 2))
+            rx = lad_x - 6
+            nrect = vs.get_rect(topright=(rx, by))
+
+            # 更新フラッシュ: 直近 UPDATE_FLASH_SEC 以内に値が更新されたら
+            # 数字の周りに広がって消えるリング＋淡いハイライトを重ねる
+            age = now_t - upd_t
+            if 0.0 <= age < UPDATE_FLASH_SEC:
+                prog  = age / UPDATE_FLASH_SEC          # 0→1
+                fade  = 1.0 - prog
+                grow  = int(nrect.height * 0.55 * prog)
+                fr    = nrect.inflate(int(nrect.height * 0.5) + grow * 2,
+                                      int(nrect.height * 0.35) + grow * 2)
+                fx = pygame.Surface((fr.width, fr.height), pygame.SRCALPHA)
+                lr = fx.get_rect()
+                pygame.draw.rect(fx, (*col, int(60 * fade)), lr, border_radius=10)
+                pygame.draw.rect(fx, (*col, int(230 * fade)), lr,
+                                 width=max(2, int(h * 0.007)), border_radius=10)
+                surf.blit(fx, fr.topleft)
+
+            surf.blit(vs, nrect)
+            pygame.draw.line(surf, col, (rx + 3, yv), (lad_x, yv), 1)
+
+    # current-level marker: smoothed at render rate (30 fps)
+    state.ladder_pos += (spl - state.ladder_pos) * 0.15
+    my  = ty(state.ladder_pos)
+    mcol = (255, 250, 200)
+    if state.nf_frozen:
+        mcol = tuple(max(0, c - 80) for c in mcol)
+    tri = max(13, int(h * 0.036))           # marker scales with meter height
+    lwd = max(3, int(h * 0.008))
+    pygame.draw.line(surf, mcol, (lad_x, my), (row_r, my), lwd)
+    pygame.draw.polygon(surf, mcol, [(lad_x + 3, my), (lad_x - tri - 4, my - tri),
+                                     (lad_x - tri - 4, my + tri)])
+
+
 def draw_audience(surf, state: State, fonts):
     W, H = surf.get_size()
     surf.fill(BG)
@@ -606,16 +792,30 @@ def draw_audience(surf, state: State, fonts):
         draw_text(surf, msg, fonts["body"], C_DIM, W // 2, H // 2, anchor="center")
         return
 
-    # ── Layout: left column = stats + number, right column = illustration ──
-    top_h      = int(H * 0.58)
-    right_w    = int(W * 0.36)                       # right column for the large illustration
-    right_cx   = W - right_w // 2                    # horizontal center of the illustration column
-    stat_col_w = int(W * 0.13)                       # far-left column reserved for max/min
-    num_cx     = (stat_col_w + (W - right_w)) // 2   # number centered in the middle band
+    # ── Layout (mode-dependent) ──────────────────────────────
+    #   kids: 右に縦いっぱいの幅広はしごメーター、グラフはその左側だけに配置
+    #   adult: 従来レイアウト（左=統計、右=単一イラスト、下=全幅グラフ）
+    kids  = (state.aud_mode == "kids")
+    top_h = int(H * (0.62 if kids else 0.58))
+
+    if kids:
+        lad_col_w   = int(W * 0.30)                  # full-height ladder column (right)
+        icon_zone_w = int(W * 0.24)                  # big active icon + caption
+        content_r   = W - lad_col_w                  # right edge of the non-ladder area
+        stat_col_w  = 0
+        num_left, num_right = 20, content_r - icon_zone_w
+    else:
+        right_w     = int(W * 0.36)                  # right column for the large illustration
+        right_cx    = W - right_w // 2               # horizontal center of the illustration column
+        content_r   = W
+        stat_col_w  = int(W * 0.13)                  # far-left column reserved for max/min
+        num_left, num_right = stat_col_w, W - right_w
+
+    num_cx = (num_left + num_right) // 2              # number centered in the middle band
+    band_w = num_right - num_left - 20
 
     # Number sized to the top area, then clamped so a 3-digit value still fits the band.
     num_pt   = max(60, int(top_h * 0.66))
-    band_w   = (W - right_w) - stat_col_w - 20
     ref_w    = _get_sysf(num_pt, bold=True).size("888")[0] \
                + 6 + _get_sysf(max(24, int(num_pt * 0.30))).size("dB")[0]
     if ref_w > band_w:
@@ -653,34 +853,30 @@ def draw_audience(surf, state: State, fonts):
     surf.blit(unit_surf, (num_x + num_surf.get_width() + 6,
                           num_y + num_surf.get_height() - unit_surf.get_height()))
 
-    # ── Large illustration + caption (right column) ──────────
-    lbl_text, lbl_icon = noise_label(spl)
-    lbl_color = db_color(spl)
+    # ── Right column: noise-level display (mode-dependent) ───
+    lbl_text, lbl_icon = noise_label(spl, state.aud_mode)
+    lbl_color = db_color_smooth(spl)
     if state.nf_frozen:
         lbl_color = tuple(max(0, c - 80) for c in lbl_color)
 
-    icon = _get_icon(lbl_icon, int(top_h * 0.50))    # large — readable from the back rows
+    if kids:
+        # 右=ウィンドウ縦いっぱいのはしごメーター（最大/最小統合）、その左=大型アクティブアイコン
+        ladder_rect = pygame.Rect(content_r + 4, 8, lad_col_w - 12, H - 16)
+        draw_noise_ladder(surf, state, ladder_rect, spl)
 
-    # caption font shrinks only if a long label would overflow the column
-    cap_w = right_w - 24
-    f_lbl = _get_sysf(lbl_pt, bold=True)
-    lbl_surf = f_lbl.render(lbl_text, True, lbl_color)
-    if lbl_surf.get_width() > cap_w:
-        f_lbl = _get_sysf(max(14, int(lbl_pt * cap_w / lbl_surf.get_width())), bold=True)
-        lbl_surf = f_lbl.render(lbl_text, True, lbl_color)
-
-    gap_i   = int(top_h * 0.05)
-    group_h = (icon.get_height() + gap_i if icon else 0) + lbl_surf.get_height()
-    gy      = (top_h - group_h) // 2
-    if icon:
-        tinted = icon.copy()
-        tinted.fill((*lbl_color, 255), special_flags=pygame.BLEND_RGBA_MULT)
-        surf.blit(tinted, tinted.get_rect(centerx=right_cx, top=gy))
-        gy += icon.get_height() + gap_i
-    surf.blit(lbl_surf, lbl_surf.get_rect(centerx=right_cx, top=gy))
+        big_cx = content_r - icon_zone_w // 2
+        _draw_level_group(surf, big_cx, top_h, lbl_icon, lbl_text, lbl_color,
+                          icon_h=int(top_h * 0.46),
+                          cap_w=icon_zone_w - 12, lbl_pt=lbl_pt)
+    else:
+        # 大人モード: 単一の大型イラスト + キャプション（従来仕様）
+        _draw_level_group(surf, right_cx, top_h, lbl_icon, lbl_text, lbl_color,
+                          icon_h=int(top_h * 0.50),
+                          cap_w=right_w - 24, lbl_pt=lbl_pt)
 
     # ── Session stats: far left (最大 top, 最小 bottom) ──────
-    if state.spl_count > 0:
+    #   kids モードは右のはしごメーターに最大/最小を統合するため左列は出さない
+    if state.spl_count > 0 and not kids:
         left_cx = max(stat_col_w // 2, 44)
         margin  = max(12, int(top_h * 0.05))
 
@@ -699,13 +895,13 @@ def draw_audience(surf, state: State, fonts):
         surf.blit(hint, hint.get_rect(center=(num_cx, top_h - hint_pt - 4)))
     else:
         dot = _get_sysf(rec_pt).render("● REC", True, C_ERR)
-        surf.blit(dot, dot.get_rect(midright=(W - 20, top_h - rec_pt - 4)))
+        surf.blit(dot, dot.get_rect(midright=(content_r - 16, top_h - rec_pt - 4)))
 
     # ── divider ──────────────────────────────────────────────
-    pygame.draw.line(surf, (40, 40, 40), (30, top_h), (W - 30, top_h), 1)
+    pygame.draw.line(surf, (40, 40, 40), (30, top_h), (content_r - 20, top_h), 1)
 
-    # ── Graph (bottom 42%) ───────────────────────────────────
-    graph_rect = pygame.Rect(0, top_h + 4, W, H - top_h - 4)
+    # ── Graph (bottom, left of the ladder in kids mode) ──────
+    graph_rect = pygame.Rect(0, top_h + 4, content_r, H - top_h - 4)
     draw_graph(surf, state.history, graph_rect, fonts["small"])
 
 
@@ -834,7 +1030,18 @@ def handle_key(event, state: State, audio: AudioEngine):
 
     elif scr == "main":
         if key == pygame.K_SPACE:
-            state.running = not state.running
+            with state.lock:
+                state.running = not state.running
+                if state.running:
+                    # 計測開始: 直前の履歴と折れ線をつなげず、統計をリセット
+                    if state.history:
+                        state.history.append((time.time(), None))  # 折れ線の切れ目マーカー
+                    state.spl_max = None
+                    state.spl_min = None
+                    state.spl_max_t = 0.0
+                    state.spl_min_t = 0.0
+                    state.spl_sum = 0.0
+                    state.spl_count = 0
 
         elif key == pygame.K_n:
             state.screen = "noise_setup"
@@ -852,6 +1059,9 @@ def handle_key(event, state: State, audio: AudioEngine):
         elif key == pygame.K_f:
             pygame.display.toggle_fullscreen()
             state.fullscreen = not state.fullscreen
+
+        elif key == pygame.K_m:
+            state.aud_mode = "adult" if state.aud_mode == "kids" else "kids"
 
         elif key == pygame.K_TAB:
             state.show_overlay = not state.show_overlay
@@ -956,7 +1166,7 @@ def main():
 def _draw_overlay(surf, state: State, fonts):
     """Semi-transparent operator info panel (Tab to toggle)."""
     W, H = surf.get_size()
-    panel_w, panel_h = 380, 232
+    panel_w, panel_h = 380, 276
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((10, 10, 10, 210))
 
@@ -973,15 +1183,18 @@ def _draw_overlay(surf, state: State, fonts):
         mode_str  = "共有モード"
         mode_col  = (200, 140, 60)
 
+    aud_mode_str = "大人・子ども" if state.aud_mode == "kids" else "大人"
     lines = [
         ("OPERATOR",                              (240, 192, 64)),
         (f"RAW  {state.current_raw:+.1f} dBFS",  (160, 160, 160)),
         (f"SPL  {state.current_spl:.1f} dB",      (210, 210, 210)),
         (gate_str,                                (100, 180, 100) if not state.nf_frozen else (180, 100, 100)),
         (f"MIC  {mode_str}",                      mode_col),
+        (f"VIEW {aud_mode_str}モード",            (160, 160, 160)),
         ("",                                      (0, 0, 0)),
         ("[SPACE] 開始/停止  [N] 暗騒音測定",      (100, 100, 100)),
         ("[F] フルスクリーン  [Tab] この画面",      (100, 100, 100)),
+        ("[M] 表示モード切替",                     (100, 100, 100)),
     ]
     if state.calib:
         c = state.calib
