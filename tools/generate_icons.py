@@ -147,6 +147,45 @@ def horn():
     return s
 
 
+def whisper():
+    """口元に人差し指（ひそひそごえ）"""
+    s = new_surf()
+    # 顔
+    pygame.draw.circle(s, W, (64, 64), 46)
+    # 目（閉じた目・抜き）
+    for ex in (46, 82):
+        pygame.draw.arc(s, (0, 0, 0, 0), pygame.Rect(ex - 9, 46, 18, 14),
+                        math.pi, 2 * math.pi, 4)
+        pygame.draw.circle(s, (0, 0, 0, 0), (ex, 52), 6)
+    # 人差し指（抜きの縁取りの中に白い指）
+    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(53, 64, 22, 60), border_radius=11)
+    pygame.draw.rect(s, W, pygame.Rect(58, 69, 12, 52), border_radius=6)
+    return s
+
+
+def ambulance():
+    """救急車 + サイレン音波（きゅうきゅうしゃのサイレン）"""
+    s = new_surf()
+    # 荷室（箱）
+    pygame.draw.rect(s, W, pygame.Rect(8, 52, 74, 46), border_radius=4)
+    # キャブ（前部）
+    pygame.draw.polygon(s, W, [(82, 62), (104, 62), (116, 78), (116, 98), (82, 98)])
+    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(88, 68, 16, 12))     # 窓（抜き）
+    # 十字マーク（抜き）
+    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(39, 60, 10, 30))
+    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(29, 70, 30, 10))
+    # 車輪
+    for cx in (30, 98):
+        pygame.draw.circle(s, W, (cx, 102), 11)
+        pygame.draw.circle(s, (0, 0, 0, 0), (cx, 102), 5)
+    # 回転灯 + サイレン音波
+    pygame.draw.rect(s, W, pygame.Rect(38, 40, 12, 12), border_radius=3)
+    for r in (12, 20, 28):
+        pygame.draw.arc(s, W, pygame.Rect(44 - r, 38 - r, r * 2, r * 2),
+                        math.pi / 6, 5 * math.pi / 6, 4)
+    return s
+
+
 def jet():
     """ジェット機シルエット（ジェット機エンジンの横）"""
     s = new_surf()
@@ -171,6 +210,8 @@ ICONS = {
     "cicada.png":       cicada,
     "construction.png": construction,
     "horn.png":         horn,
+    "whisper.png":      whisper,
+    "ambulance.png":    ambulance,
     "jet.png":          jet,
 }
 
