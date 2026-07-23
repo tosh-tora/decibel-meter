@@ -12,6 +12,7 @@ Controls (Operator window):
   Q/Esc  — quit
 """
 
+import os
 import json
 import math
 import threading
@@ -21,7 +22,8 @@ from pathlib import Path
 
 import numpy as np
 import pygame
-import sounddevice as sd
+os.environ["SD_ENABLE_ASIO"] = "1"   # To use ASIO devices
+import sounddevice as sd   # type: ignore[import-untyped]
 
 # ─────────────────────────────────────────────────────────────
 #  Constants
@@ -37,6 +39,12 @@ HISTORY_MAX   = int(HISTORY_SEC * UPDATE_HZ)
 RAW_BUF_MAX   = int(3 * UPDATE_HZ)   # 3 s window for calibration snapshot
 
 CALIB_FILE    = Path(__file__).parent / "calibration.json"
+
+SD_CONFIG = {
+    "device": "ASIO Fireface USB",   # Refer sd.query_devices() for available devices
+    "extra_settings": sd.AsioSettings(channel_selectors=[0]),
+}
+# SD_CONFIG = {}
 
 # Colors
 BG         = (10, 10, 10)
@@ -171,6 +179,7 @@ class AudioEngine:
                 channels=1,
                 extra_settings=wasapi,
                 callback=self._callback,
+                **SD_CONFIG,
             )
             self.stream = stream
             with self.state.lock:
@@ -188,6 +197,7 @@ class AudioEngine:
                 dtype="float32",
                 channels=1,
                 callback=self._callback,
+                **SD_CONFIG,
             )
             with self.state.lock:
                 self.state.wasapi_exclusive = False
