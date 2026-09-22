@@ -109,5 +109,6 @@ requirements.txt         # 依存パッケージ
 calibration.json         # キャリブレーション保存（自動生成、校正時のデバイス名も保存）
 specification.md         # 企画仕様書
 icons/                   # 騒音レベルラベル用アイコン（白ピクトグラム PNG、同名差し替え可）
-tools/generate_icons.py  # 仮アイコンの生成スクリプト
+tools/generate_icons.py  # アイコンの生成スクリプト（python tools/generate_icons.py で icons/ を再生成）
+tools/*_src.png          # 下絵から作るアイコンの元画像（白地に黒のシルエット）
 ```

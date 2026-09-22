@@ -3,7 +3,8 @@
 
 128×128 の透過 PNG を白一色で描く（jet.png のみ横長。理由は jet() を参照）。白で描くことで decibel_meter.py 側の
 BLEND_RGBA_MULT ティントがそのまま表示色になる。
-本番用イラストに差し替える場合は icons/ 内の同名ファイルを上書きすればよい。
+一部のアイコン（セミ・ショベルカー・耳打ち・救急車）は tools/*_src.png の下絵
+（白地に黒のシルエット）を白抜きにして作る。絵を変えるときは下絵を差し替えて再実行する。
 
 実行:  python tools/generate_icons.py
 """
@@ -60,82 +61,26 @@ def conversation():
     return s
 
 
+CICADA_SRC = Path(__file__).parent / "cicada_src.png"   # セミの下絵（白地に黒のシルエット、右に鳴き声）
+CICADA_AXIS_X = 201.5   # セミの左右対称軸（下絵基準、両目の中点）
+CICADA_BOLT_X = 300     # これより右にある黒い塊を鳴き声のギザギザとみなす（下絵基準）
+
+
 def cicada():
-    """セミ（上面図）+ 周囲に散る鳴き声のギザギザ。座標は 400×420 の下絵基準"""
-    k = SS * 0.3
-    ox, oy = 100, 20                              # ギザギザの分だけ下絵の外側に余白をとる
-    big = pygame.Surface((round(600 * k), round(460 * k)), pygame.SRCALPHA)
-    CUT = (0, 0, 0, 0)
+    """セミ + 左右に出る鳴き声のギザギザ（下絵は右側だけなので、左右反転して左にも付ける）"""
+    art = _from_src(CICADA_SRC)
+    src = pygame.image.load(str(CICADA_SRC))
+    dark = pygame.mask.from_threshold(src, (0, 0, 0), (128, 128, 128, 255))
+    bolts = [r for c in dark.connected_components() for r in c.get_bounding_rects()
+             if r.left >= CICADA_BOLT_X]
 
-    def P(x, y):
-        return (round((x + ox) * k), round((y + oy) * k))
-
-    def ell(x, y, rx, ry, rot=0.0, n=72):
-        a = math.radians(rot)
-        return [P(x + rx * math.cos(t) * math.cos(a) - ry * math.sin(t) * math.sin(a),
-                  y + rx * math.cos(t) * math.sin(a) + ry * math.sin(t) * math.cos(a))
-                for t in (2 * math.pi * i / n for i in range(n))]
-
-    def line(pts, w, color=W):
-        pts = [P(x, y) for x, y in pts]
-        pygame.draw.lines(big, color, False, pts, round(w * k))
-        for q in pts:
-            pygame.draw.circle(big, color, q, round(w * k / 2))
-
-    def both(pts, w, color=W):                    # 左右対称に描く
-        line(pts, w, color)
-        line([(400 - x, y) for x, y in pts], w, color)
-
-    def blob(x, y, rx, ry, rot=0.0, gap=9):       # 周りを透明で縁取ってから白で塗る
-        pygame.draw.polygon(big, CUT, ell(x, y, rx + gap, ry + gap, rot))
-        pygame.draw.polygon(big, W, ell(x, y, rx, ry, rot))
-
-    # ── 脚（6本・関節で折れ曲がる細い脚）──────────────
-    both([(165, 112), (122, 96), (104, 70), (92, 64)], 12)
-    both([(160, 150), (112, 146), (84, 164), (72, 164)], 12)
-    both([(165, 188), (120, 214), (104, 250), (94, 258)], 12)
-
-    # ── 胸（大きく丸い胸部 + 背中のアーチ模様）──────────
-    blob(200, 140, 56, 58)
-    for rx, ry, cy in ((40, 22, 142), (24, 13, 150)):
-        pygame.draw.arc(big, CUT, pygame.Rect(*P(200 - rx, cy - ry), round(2 * rx * k), round(2 * ry * k)),
-                        math.radians(20), math.radians(160), round(8 * k))
-    line([(200, 150), (200, 186)], 8, CUT)
-
-    # ── 翅（細長い翅を V 字に重ねる）─────────────────
-    blob(172, 292, 42, 118, 9)
-    blob(228, 292, 42, 118, -9)
-    for sx in (-1, 1):                            # 翅脈（抜き）
-        both_x = lambda x: 200 + sx * (200 - x)
-        vein = [(186, 196), (180, 260), (176, 330), (182, 392)]
-        line([(both_x(x), y) for x, y in vein], 7, CUT)
-        for (x0, y0), (x1, y1) in (((180, 262), (156, 300)), ((178, 300), (158, 344)),
-                                   ((176, 336), (160, 376))):
-            line([(both_x(x0), y0), (both_x(x1), y1)], 7, CUT)
-
-    # ── 頭・触角・複眼 ─────────────────────────────
-    blob(200, 80, 40, 20)
-    both([(188, 70), (180, 46), (164, 32)], 11)
-    for sx in (-1, 1):
-        ex = 200 + sx * 36
-        pygame.draw.circle(big, CUT, P(ex, 72), round(28 * k))
-        pygame.draw.circle(big, W, P(ex, 72), round(20 * k))
-        pygame.draw.circle(big, CUT, P(ex, 72), round(12 * k))
-        pygame.draw.circle(big, W, P(ex, 73), round(6 * k))
-
-    # ── 鳴き声（左右に散るギザギザ）─────────────────
-    for sx in (-1, 1):
-        for ang in (40, 0, -40):                  # 胸の中心から見た方向（右側基準）
-            t = math.radians(ang if sx > 0 else 180 - ang)
-            ux, uy = math.cos(t), -math.sin(t)
-            vx, vy = -uy, ux
-            x0, y0 = 200 + ux * 150, 200 + uy * 150
-            pts = [(x0, y0),
-                   (x0 + ux * 20 + vx * 14, y0 + uy * 20 + vy * 14),
-                   (x0 + ux * 24 - vx * 14, y0 + uy * 24 - vy * 14),
-                   (x0 + ux * 46, y0 + uy * 46)]
-            line(pts, 14)
-
+    pad = 80                                                   # 左のギザギザを置く余白
+    big = pygame.Surface((art.get_width() + pad, art.get_height()), pygame.SRCALPHA)
+    big.blit(art, (pad, 0))
+    for r in bolts:
+        r = r.inflate(6, 6)                                    # 縁のアンチエイリアスも含める
+        piece = pygame.transform.flip(art.subsurface(r.clip(art.get_rect())), True, False)
+        big.blit(piece, (pad + round(2 * CICADA_AXIS_X) - r.right, r.top))
     return _fit(big)
 
 
@@ -150,25 +95,34 @@ def _fit(big):
     return s
 
 
+CONSTRUCTION_SRC = Path(__file__).parent / "construction_src.png"   # ショベルカーの下絵（白地に黒のシルエット）
+
+
+def _from_src(path, min_area=0):
+    """白地に黒の下絵を白抜きにする（黒いほど不透明）。min_area 未満の黒い塊（px、下絵基準）は消す"""
+    src = pygame.image.load(str(path))
+    ink = 255 - pygame.surfarray.array3d(src).mean(axis=2)
+    ink = (ink - 40) * 255 / (215 - 40)                   # 地のわずかな灰色（圧縮ノイズ）を透明にする
+    if min_area:
+        dark = pygame.mask.from_threshold(src, (0, 0, 0), (128, 128, 128, 255))
+        for comp in dark.connected_components():
+            if comp.count() < min_area:
+                grown = pygame.mask.Mask(comp.get_size())
+                grown.draw(comp, (0, 0))
+                for dx in range(-4, 5):                     # 縁のアンチエイリアスも消す
+                    for dy in range(-4, 5):
+                        grown.draw(comp, (dx, dy))
+                hit = pygame.surfarray.array3d(grown.to_surface())[..., 0] > 0
+                ink[hit] = 0
+    big = pygame.Surface(src.get_size(), pygame.SRCALPHA)
+    big.fill(W)
+    pygame.surfarray.pixels_alpha(big)[:] = ink.clip(0, 255).astype("uint8")
+    return big
+
+
 def construction():
-    """ブルドーザー（工事現場）"""
-    s = new_surf()
-    # クローラー（履帯）
-    pygame.draw.rect(s, W, pygame.Rect(26, 94, 82, 24), border_radius=12)
-    for cx in (42, 60, 78, 96):                                       # 転輪（穴）
-        pygame.draw.circle(s, (0, 0, 0, 0), (cx, 108), 6)
-    # 車体（エンジンフード）
-    pygame.draw.polygon(s, W, [(40, 80), (48, 62), (90, 62), (90, 94), (40, 94)])
-    # 運転席（キャブ）
-    pygame.draw.rect(s, W, pygame.Rect(64, 44, 28, 20), border_radius=3)
-    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(70, 50, 14, 12))    # 窓（抜き）
-    # 排気筒
-    pygame.draw.rect(s, W, pygame.Rect(54, 46, 7, 18))
-    pygame.draw.rect(s, W, pygame.Rect(52, 42, 11, 6), border_radius=2)  # キャップ
-    # 排土板（ブレード）
-    pygame.draw.polygon(s, W, [(20, 58), (32, 62), (32, 104), (26, 112), (14, 108), (12, 64)])
-    pygame.draw.line(s, W, (32, 90), (50, 80), 7)                     # プッシュアーム
-    return s
+    """ショベルカー + 砕ける岩 + 衝撃のギザギザ（下絵のシルエットを白抜きにしたもの）"""
+    return _fit(_from_src(CONSTRUCTION_SRC))
 
 
 def horn():
@@ -186,43 +140,20 @@ def horn():
     return s
 
 
+WHISPER_SRC = Path(__file__).parent / "whisper_src.png"   # 耳打ちの下絵（白地に黒のシルエット）
+
+
 def whisper():
-    """口元に人差し指（ひそひそごえ）"""
-    s = new_surf()
-    # 顔
-    pygame.draw.circle(s, W, (64, 64), 46)
-    # 目（閉じた目・抜き）
-    for ex in (46, 82):
-        pygame.draw.arc(s, (0, 0, 0, 0), pygame.Rect(ex - 9, 46, 18, 14),
-                        math.pi, 2 * math.pi, 4)
-        pygame.draw.circle(s, (0, 0, 0, 0), (ex, 52), 6)
-    # 人差し指（抜きの縁取りの中に白い指）
-    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(53, 64, 22, 60), border_radius=11)
-    pygame.draw.rect(s, W, pygame.Rect(58, 69, 12, 52), border_radius=6)
-    return s
+    """耳打ちする人と聞く人（ひそひそ話）。下絵にある声の三本線は小さい塊として取り除く"""
+    return _fit(_from_src(WHISPER_SRC, min_area=2000))
+
+
+AMBULANCE_SRC = Path(__file__).parent / "ambulance_src.png"   # 救急車の下絵（白地に黒のシルエット）
 
 
 def ambulance():
-    """救急車 + サイレン音波（きゅうきゅうしゃのサイレン）"""
-    s = new_surf()
-    # 荷室（箱）
-    pygame.draw.rect(s, W, pygame.Rect(8, 52, 74, 46), border_radius=4)
-    # キャブ（前部）
-    pygame.draw.polygon(s, W, [(82, 62), (104, 62), (116, 78), (116, 98), (82, 98)])
-    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(88, 68, 16, 12))     # 窓（抜き）
-    # 十字マーク（抜き）
-    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(39, 60, 10, 30))
-    pygame.draw.rect(s, (0, 0, 0, 0), pygame.Rect(29, 70, 30, 10))
-    # 車輪
-    for cx in (30, 98):
-        pygame.draw.circle(s, W, (cx, 102), 11)
-        pygame.draw.circle(s, (0, 0, 0, 0), (cx, 102), 5)
-    # 回転灯 + サイレン音波
-    pygame.draw.rect(s, W, pygame.Rect(38, 40, 12, 12), border_radius=3)
-    for r in (12, 20, 28):
-        pygame.draw.arc(s, W, pygame.Rect(44 - r, 38 - r, r * 2, r * 2),
-                        math.pi / 6, 5 * math.pi / 6, 4)
-    return s
+    """救急車 + 回転灯の光 + サイレン音波（下絵のシルエットを白抜きにしたもの）"""
+    return _fit(_from_src(AMBULANCE_SRC))
 
 
 SS = 4   # jet() は 4 倍の解像度で描いて縮小する（斜めの輪郭をなめらかにするため）
