@@ -79,7 +79,7 @@ noise_setup → noise_measure → main
   - **サンプリング**: `spl_max/min` は表示値（`disp_spl`）と同じ `val_now` を**毎コールバック**で追跡（履歴サンプリング間隔だと隙間の瞬間ピークを取りこぼし「表示値 > max」が起きるため）。`spl_sum/count`（平均用）は履歴レート（`UPDATE_HZ`）で蓄積
 - **最大/最小 更新フラッシュ（kids のみ）**: 値が更新されてから `UPDATE_FLASH_SEC` 秒間、数字の周りに値の色（`db_color_smooth`）で広がりながら消えるリング＋淡いハイライトを描画。音を出すたびに最大/最小が伸びたことが観客に伝わる
 - **表示スロットル**: `DISP_HZ` ごとに `disp_spl` を更新。インターバル内の最大値を `_disp_peak` で追跡して反映
-- **騒音レベルラベル**: `noise_label(disp_spl, mode)` で `NOISE_LABELS` からモード別のラベル/アイコンを選択し、`_draw_level_group()` で大型イラスト（adult: 高さ `top_h*0.5`、kids: `top_h*0.45`）+ キャプションを縦積み表示。アイコンは `icons/` の白ピクトグラムを `_get_icon()` でキャッシュ読込し `BLEND_RGBA_MULT` で `db_color_smooth` にティント。キャプションは列幅を超える場合のみ縮小。画像がなければテキストのみ。`nf_frozen` 時は数字と同様に減光
+- **騒音レベルラベル**: `noise_label(disp_spl, mode)` で `NOISE_LABELS` からモード別のラベル/アイコンを選択し、`_draw_level_group()` で大型イラスト（adult: 高さ `top_h*0.5`、kids: `top_h*0.45`）+ キャプションを縦積み表示。アイコンは `icons/` の白ピクトグラム（基本 128×128、`jet.png` のみ横長）を `_get_icon(file, height, max_w)` で高さ×最大幅の枠に収めてキャッシュ読込し `BLEND_RGBA_MULT` で `db_color_smooth` にティント。キャプションは列幅を超える場合のみ縮小。画像がなければテキストのみ。`nf_frozen` 時は数字と同様に減光
 - **はしご型たとえメーター（kids のみ）**: `draw_noise_ladder(surf, state, rect, spl)`。`rect` はウィンドウ縦いっぱいの幅広列。内部は左列（幅42%）＝最大/最小の数値ラベル、右側＝アイコン列＋dB目盛り。`NOISE_LABELS` 全7段の子どもアイコンを dB リニア軸（`DB_MIN`〜`DB_MAX`）上に縦積みし、アイコン・目盛り・ラベルのフォントは `rect` 高さ `h` に比例（縦を大きく取るほど大きく＝遠方視認性）。アクティブ段は `db_color_smooth` ティント+1.3倍、非アクティブ段は中明度グレー `(150,150,150)`（暗くしすぎない）。現在レベルのマーカー（`h` 比例の三角＋横線、`State.ladder_pos` で30fps平滑追従）。セッション `spl_min`〜`spl_max` を半透明レンジ帯＋上下端キャップ線＋左列の「最大／最小」数値ラベル（`db_color_smooth` 着色）で統合表示し、ダイナミクスレンジを可視化
 
 ## ノイズゲート
@@ -109,5 +109,6 @@ requirements.txt         # 依存パッケージ
 calibration.json         # キャリブレーション保存（自動生成、校正時のデバイス名も保存）
 specification.md         # 企画仕様書
 icons/                   # 騒音レベルラベル用アイコン（白ピクトグラム PNG、同名差し替え可）
-tools/generate_icons.py  # 仮アイコンの生成スクリプト
+tools/generate_icons.py  # アイコンの生成スクリプト（python tools/generate_icons.py で icons/ を再生成）
+tools/*_src.png          # 下絵から作るアイコンの元画像（白地に黒のシルエット）
 ```
