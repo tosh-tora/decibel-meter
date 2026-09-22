@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """騒音レベルラベル用の仮アイコン（白ピクトグラム）を icons/ に生成する。
 
-128×128 の透過 PNG を白一色で描く。白で描くことで decibel_meter.py 側の
+128×128 の透過 PNG を白一色で描く（jet.png のみ横長。理由は jet() を参照）。白で描くことで decibel_meter.py 側の
 BLEND_RGBA_MULT ティントがそのまま表示色になる。
 本番用イラストに差し替える場合は icons/ 内の同名ファイルを上書きすればよい。
 
@@ -61,53 +61,92 @@ def conversation():
 
 
 def cicada():
-    """セミ（上面図・騒音をまき散らすセミの鳴き声）"""
+    """セミ（上面図）+ 周囲に散る鳴き声のギザギザ。座標は 400×420 の下絵基準"""
+    k = SS * 0.3
+    ox, oy = 100, 20                              # ギザギザの分だけ下絵の外側に余白をとる
+    big = pygame.Surface((round(600 * k), round(460 * k)), pygame.SRCALPHA)
+    CUT = (0, 0, 0, 0)
+
+    def P(x, y):
+        return (round((x + ox) * k), round((y + oy) * k))
+
+    def ell(x, y, rx, ry, rot=0.0, n=72):
+        a = math.radians(rot)
+        return [P(x + rx * math.cos(t) * math.cos(a) - ry * math.sin(t) * math.sin(a),
+                  y + rx * math.cos(t) * math.sin(a) + ry * math.sin(t) * math.cos(a))
+                for t in (2 * math.pi * i / n for i in range(n))]
+
+    def line(pts, w, color=W):
+        pts = [P(x, y) for x, y in pts]
+        pygame.draw.lines(big, color, False, pts, round(w * k))
+        for q in pts:
+            pygame.draw.circle(big, color, q, round(w * k / 2))
+
+    def both(pts, w, color=W):                    # 左右対称に描く
+        line(pts, w, color)
+        line([(400 - x, y) for x, y in pts], w, color)
+
+    def blob(x, y, rx, ry, rot=0.0, gap=9):       # 周りを透明で縁取ってから白で塗る
+        pygame.draw.polygon(big, CUT, ell(x, y, rx + gap, ry + gap, rot))
+        pygame.draw.polygon(big, W, ell(x, y, rx, ry, rot))
+
+    # ── 脚（6本・関節で折れ曲がる細い脚）──────────────
+    both([(165, 112), (122, 96), (104, 70), (92, 64)], 12)
+    both([(160, 150), (112, 146), (84, 164), (72, 164)], 12)
+    both([(165, 188), (120, 214), (104, 250), (94, 258)], 12)
+
+    # ── 胸（大きく丸い胸部 + 背中のアーチ模様）──────────
+    blob(200, 140, 56, 58)
+    for rx, ry, cy in ((40, 22, 142), (24, 13, 150)):
+        pygame.draw.arc(big, CUT, pygame.Rect(*P(200 - rx, cy - ry), round(2 * rx * k), round(2 * ry * k)),
+                        math.radians(20), math.radians(160), round(8 * k))
+    line([(200, 150), (200, 186)], 8, CUT)
+
+    # ── 翅（細長い翅を V 字に重ねる）─────────────────
+    blob(172, 292, 42, 118, 9)
+    blob(228, 292, 42, 118, -9)
+    for sx in (-1, 1):                            # 翅脈（抜き）
+        both_x = lambda x: 200 + sx * (200 - x)
+        vein = [(186, 196), (180, 260), (176, 330), (182, 392)]
+        line([(both_x(x), y) for x, y in vein], 7, CUT)
+        for (x0, y0), (x1, y1) in (((180, 262), (156, 300)), ((178, 300), (158, 344)),
+                                   ((176, 336), (160, 376))):
+            line([(both_x(x0), y0), (both_x(x1), y1)], 7, CUT)
+
+    # ── 頭・触角・複眼 ─────────────────────────────
+    blob(200, 80, 40, 20)
+    both([(188, 70), (180, 46), (164, 32)], 11)
+    for sx in (-1, 1):
+        ex = 200 + sx * 36
+        pygame.draw.circle(big, CUT, P(ex, 72), round(28 * k))
+        pygame.draw.circle(big, W, P(ex, 72), round(20 * k))
+        pygame.draw.circle(big, CUT, P(ex, 72), round(12 * k))
+        pygame.draw.circle(big, W, P(ex, 73), round(6 * k))
+
+    # ── 鳴き声（左右に散るギザギザ）─────────────────
+    for sx in (-1, 1):
+        for ang in (40, 0, -40):                  # 胸の中心から見た方向（右側基準）
+            t = math.radians(ang if sx > 0 else 180 - ang)
+            ux, uy = math.cos(t), -math.sin(t)
+            vx, vy = -uy, ux
+            x0, y0 = 200 + ux * 150, 200 + uy * 150
+            pts = [(x0, y0),
+                   (x0 + ux * 20 + vx * 14, y0 + uy * 20 + vy * 14),
+                   (x0 + ux * 24 - vx * 14, y0 + uy * 24 - vy * 14),
+                   (x0 + ux * 46, y0 + uy * 46)]
+            line(pts, 14)
+
+    return _fit(big)
+
+
+def _fit(big):
+    """描いた範囲を切り出し、余白 6px を残して 128×128 の中央に収める"""
+    crop = big.subsurface(big.get_bounding_rect())
+    fit = (SIZE - 12) / max(crop.get_width(), crop.get_height())
+    small = pygame.transform.smoothscale(
+        crop, (round(crop.get_width() * fit), round(crop.get_height() * fit)))
     s = new_surf()
-
-    # ── 騒音（周囲に散らす稲妻）────────────────────────────
-    bolt = pygame.Surface((26, 34), pygame.SRCALPHA)
-    pygame.draw.polygon(bolt, W, [(16, 0), (4, 20), (13, 20), (6, 34),
-                                  (24, 13), (14, 13), (20, 0)])
-    for bx, by, ang in [(20, 24, 40), (13, 62, 90), (20, 100, -40),
-                        (108, 24, -40), (115, 62, -90), (108, 100, 40)]:
-        rb = pygame.transform.rotate(bolt, ang)
-        s.blit(rb, rb.get_rect(center=(bx, by)))
-
-    # ── 脚（6本・先に描いて翅で根元を隠す）───────────────
-    for x0, y0, x1, y1, x2, y2 in [(54, 34, 42, 26, 34, 28),
-                                   (54, 42, 40, 42, 32, 46),
-                                   (55, 50, 43, 56, 36, 62)]:
-        pygame.draw.lines(s, W, False, [(x0, y0), (x1, y1), (x2, y2)], 3)
-        pygame.draw.lines(s, W, False,
-                          [(128 - x0, y0), (128 - x1, y1), (128 - x2, y2)], 3)
-
-    # ── 翅（左右の大きな翅）──────────────────────────────
-    wingL = [(60, 36), (48, 44), (38, 66), (40, 92), (52, 110), (61, 84), (62, 54)]
-    wingR = [(128 - x, y) for x, y in wingL]
-    pygame.draw.polygon(s, W, wingL)
-    pygame.draw.polygon(s, W, wingR)
-    # 翅脈（控えめなクロスハッチ・抜き。白い翅部分だけが切り取られる）
-    for k in range(5):
-        x = 34 + k * 10
-        pygame.draw.line(s, (0, 0, 0, 0), (x, 44), (x + 22, 108), 1)
-        pygame.draw.line(s, (0, 0, 0, 0), (x + 22, 44), (x, 108), 1)
-        pygame.draw.line(s, (0, 0, 0, 0), (128 - x, 44), (106 - x, 108), 1)
-        pygame.draw.line(s, (0, 0, 0, 0), (106 - x, 44), (128 - x, 108), 1)
-
-    # ── 胴体（胸部＋節のある腹部）────────────────────────
-    pygame.draw.polygon(s, W, [(58, 44), (70, 44), (67, 96), (64, 106), (61, 96)])
-    for y in (54, 66, 78, 90):
-        pygame.draw.line(s, (0, 0, 0, 0), (59, y), (69, y), 2)
-    pygame.draw.ellipse(s, W, pygame.Rect(52, 28, 24, 18))
-
-    # ── 頭部・触角・複眼（大きなつぶらな目）──────────────
-    pygame.draw.ellipse(s, W, pygame.Rect(50, 14, 28, 18))
-    pygame.draw.lines(s, W, False, [(58, 16), (52, 6), (45, 4)], 2)
-    pygame.draw.lines(s, W, False, [(70, 16), (76, 6), (83, 4)], 2)
-    for ex in (51, 77):
-        pygame.draw.circle(s, W, (ex, 18), 10)
-        pygame.draw.circle(s, (0, 0, 0, 0), (ex, 18), 5)               # 瞳（抜き）
-        pygame.draw.circle(s, W, (ex - 2, 15), 2)                      # ハイライト
+    s.blit(small, small.get_rect(center=(SIZE // 2, SIZE // 2)))
     return s
 
 
@@ -214,7 +253,7 @@ def _bolt(s, pts, w):
         pygame.draw.circle(s, W, (round(q[0]), round(q[1])), w // 2)
 
 
-NOISE_ORIGIN, NOISE_DIR, NOISE_SCALE = (95, 215), 252, 1.5   # 尾部の下・やや後方下向き
+PLANE_LEVEL = 10    # _airliner()（機首上げ 15°）を水平寄りに戻す角度（度）
 
 
 def _airliner():
@@ -244,35 +283,41 @@ def _airliner():
 
 
 def jet():
-    """上昇中の旅客機 + 尾部から出る爆音（音波とギザギザ）（ジェット機 / ひこうき）"""
-    big = pygame.Surface((SIZE * SS * 3, SIZE * SS * 3), pygame.SRCALPHA)
-    ox, oy = 500, 300
-    big.blit(_airliner(), (ox, oy))
+    """ほぼ水平に飛ぶ旅客機 + 尾部から出る爆音のギザギザ（ジェット機 / ひこうき）
 
-    # 爆音は尾部の下（420×270 基準）から後方斜め下へ出す。真後ろへ出すと全体が横長になり、
-    # 128×128 に収めたとき機体が小さくなる（機体の下の空きを使って正方形に近づける）
-    tx, ty = ox + NOISE_ORIGIN[0] * 2, oy + NOISE_ORIGIN[1] * 2
-    back = math.radians(NOISE_DIR)               # 爆音の向き（y 上向きの角度）
-    n = NOISE_SCALE                              # 爆音の大きさ（機体との比率）
-    for r in (58, 94):                           # 音波
-        _arc_band(big, (tx, ty), r * n, 16 * n, back - 0.6, back + 0.6)
-    for kk in (-1, 0, 1):                        # 音波の外側に放射状のギザギザ（セミと同じ表現）
+    この画像だけ正方形にせず横長で出力する。はしごメーターの最上段（120〜130 dB）は
+    帯が狭く、アイコンの高さが抑えられるので、横に伸ばして機体を大きく見せる
+    （decibel_meter._get_icon は高さと最大幅の枠に収めて表示する）。
+    """
+    big = pygame.Surface((SIZE * SS * 3, SIZE * SS * 3), pygame.SRCALPHA)
+    plane = pygame.transform.rotozoom(_airliner(), -PLANE_LEVEL, 1)   # 15° の機首上げを水平寄りに戻す
+    pc = (900, 700)
+    big.blit(plane, plane.get_rect(center=pc))
+
+    # 尾部（420×270 基準で (40, 150)）の回転後の位置から、機軸の後方へ爆音を描く
+    a = math.radians(-PLANE_LEVEL)
+    lx, ly = 40 * 2 - 420, 150 * 2 - 270
+    tx = pc[0] + lx * math.cos(a) + ly * math.sin(a)
+    ty = pc[1] - lx * math.sin(a) + ly * math.cos(a)
+    back = math.pi + math.radians(15 - PLANE_LEVEL)   # 後方の向き（y 上向きの角度）
+    n = 1.3                                           # 爆音の大きさ（機体との比率）
+    for kk in (-1, 0, 1):                             # 尾部から放射状に出るギザギザ（セミと同じ表現）
         t = back + kk * 0.55
         ux, uy = math.cos(t), -math.sin(t)
         vx, vy = -uy, ux
-        p0 = (tx + ux * 124 * n, ty + uy * 124 * n)
+        p0 = (tx + ux * 50 * n, ty + uy * 50 * n)
         p1 = (p0[0] + (ux * 34 + vx * 22) * n, p0[1] + (uy * 34 + vy * 22) * n)
         p2 = (p1[0] + (ux * 6 - vx * 40) * n, p1[1] + (uy * 6 - vy * 40) * n)
         p3 = (p2[0] + (ux * 38 + vx * 22) * n, p2[1] + (uy * 38 + vy * 22) * n)
         _bolt(big, [p0, p1, p2, p3], round(16 * n))
 
-    # 描いた範囲を切り出し、余白 6px を残して 128×128 の中央に収める
+    # 描いた範囲を切り出し、幅 128（左右余白 6px）の横長画像にする
     crop = big.subsurface(big.get_bounding_rect())
-    fit = (SIZE - 12) / max(crop.get_width(), crop.get_height())
+    fit = (SIZE - 12) / crop.get_width()
     small = pygame.transform.smoothscale(
         crop, (round(crop.get_width() * fit), round(crop.get_height() * fit)))
-    s = new_surf()
-    s.blit(small, small.get_rect(center=(SIZE // 2, SIZE // 2)))
+    s = pygame.Surface((SIZE, small.get_height() + 12), pygame.SRCALPHA)
+    s.blit(small, (6, 6))
     return s
 
 

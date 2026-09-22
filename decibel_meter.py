@@ -427,15 +427,23 @@ def noise_label(db, mode="adult"):
 _ICON_CACHE: dict = {}
 
 
-def _get_icon(filename: str, height: int):
-    """Return the icon Surface scaled to *height*, or None if unavailable."""
-    key = (filename, height)
+def _get_icon(filename: str, height: int, max_w: int | None = None):
+    """Return the icon scaled to fit *height* × *max_w* (aspect kept), or None if unavailable.
+
+    横長のアイコン（jet.png）は高さの限られた枠でも横に伸びて大きく見えるが、
+    max_w を渡さないと隣の数字やレイアウト列にはみ出す。
+    """
+    key = (filename, height, max_w)
     if key not in _ICON_CACHE:
         surf = None
         try:
             img = pygame.image.load(str(ICON_DIR / filename)).convert_alpha()
-            w = max(1, int(img.get_width() * height / img.get_height()))
-            surf = pygame.transform.smoothscale(img, (w, height))
+            iw, ih = img.get_size()
+            fit = height / ih
+            if max_w is not None:
+                fit = min(fit, max_w / iw)
+            surf = pygame.transform.smoothscale(
+                img, (max(1, int(iw * fit)), max(1, int(ih * fit))))
         except Exception:
             pass  # 画像なし・読込失敗はテキストのみ表示
         _ICON_CACHE[key] = surf
@@ -793,7 +801,7 @@ def draw_operator(surf, state: State, fonts):
 # ─────────────────────────────────────────────────────────────
 def _draw_level_group(surf, cx, top_h, icon_file, text, color, icon_h, cap_w, lbl_pt):
     """大型アイコン + キャプションを縦積みで cx 中心に描く（観客画面 両モード共用）。"""
-    icon  = _get_icon(icon_file, icon_h)
+    icon  = _get_icon(icon_file, icon_h, max_w=cap_w)
     f_lbl = _get_sysf(lbl_pt, bold=True)
     lbl_surf = f_lbl.render(text, True, color)
     if lbl_surf.get_width() > cap_w:
@@ -856,7 +864,9 @@ def draw_noise_ladder(surf, state: State, rect: pygame.Rect, spl):
 
         band_px = max(1, ty(lo) - ty(hi))          # 狭い帯（10dB刻み）でアイコンが被らないようクランプ
         want_ih = int(base_ih * 1.3) if active else base_ih
-        icon = _get_icon(entry[4], max(10, min(want_ih, band_px - 4)))
+        # 幅はアイコン列の中心から左端までの 2 倍まで（右の dB 数字に被らないように）
+        icon = _get_icon(entry[4], max(10, min(want_ih, band_px - 4)),
+                         max_w=2 * (icx - lad_x))
         if icon:
             tinted = icon.copy()
             tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
