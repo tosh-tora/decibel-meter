@@ -214,7 +214,7 @@ def _bolt(s, pts, w):
         pygame.draw.circle(s, W, (round(q[0]), round(q[1])), w // 2)
 
 
-PLANE_TILT = 15     # 機首上げの角度（度）。_airliner() はこの傾きで直接描く
+NOISE_ORIGIN, NOISE_DIR, NOISE_SCALE = (95, 215), 252, 1.5   # 尾部の下・やや後方下向き
 
 
 def _airliner():
@@ -249,10 +249,11 @@ def jet():
     ox, oy = 500, 300
     big.blit(_airliner(), (ox, oy))
 
-    # 尾部（420×270 基準で (40, 150)）から機軸の後方へ爆音を描く
-    tx, ty = ox + 40 * 2, oy + 150 * 2
-    back = math.pi + math.radians(PLANE_TILT)    # 後方の向き（y 上向きの角度）
-    n = 1.7                                      # 爆音の大きさ（機体との比率）
+    # 爆音は尾部の下（420×270 基準）から後方斜め下へ出す。真後ろへ出すと全体が横長になり、
+    # 128×128 に収めたとき機体が小さくなる（機体の下の空きを使って正方形に近づける）
+    tx, ty = ox + NOISE_ORIGIN[0] * 2, oy + NOISE_ORIGIN[1] * 2
+    back = math.radians(NOISE_DIR)               # 爆音の向き（y 上向きの角度）
+    n = NOISE_SCALE                              # 爆音の大きさ（機体との比率）
     for r in (58, 94):                           # 音波
         _arc_band(big, (tx, ty), r * n, 16 * n, back - 0.6, back + 0.6)
     for kk in (-1, 0, 1):                        # 音波の外側に放射状のギザギザ（セミと同じ表現）
