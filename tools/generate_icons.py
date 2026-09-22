@@ -186,20 +186,85 @@ def ambulance():
     return s
 
 
+SS = 4   # jet() は 4 倍の解像度で描いて縮小する（斜めの輪郭をなめらかにするため）
+
+
+def _round_poly(s, pts, r):
+    """角を半径 r で丸めた多角形（太い外周線と頂点の円で角を埋める）"""
+    pygame.draw.polygon(s, W, pts)
+    pygame.draw.lines(s, W, True, pts, r * 2)
+    for p in pts:
+        pygame.draw.circle(s, W, p, r)
+
+
+def _arc_band(s, c, r, w, a0, a1, n=24):
+    """太い円弧を塗りつぶし多角形で描く（draw.arc を太くすると隙間が出るため）"""
+    ts = [a0 + (a1 - a0) * i / n for i in range(n + 1)]
+    outer = [(c[0] + (r + w / 2) * math.cos(t), c[1] - (r + w / 2) * math.sin(t)) for t in ts]
+    inner = [(c[0] + (r - w / 2) * math.cos(t), c[1] - (r - w / 2) * math.sin(t))
+             for t in reversed(ts)]
+    pygame.draw.polygon(s, W, outer + inner)
+    for t in (a0, a1):
+        pygame.draw.circle(s, W, (round(c[0] + r * math.cos(t)), round(c[1] - r * math.sin(t))), w // 2)
+
+
+def _bolt(s, pts, w):
+    pygame.draw.lines(s, W, False, pts, w)
+    for q in pts:
+        pygame.draw.circle(s, W, (round(q[0]), round(q[1])), w // 2)
+
+
+def _cute_plane():
+    """機首を右に向けた、ずんぐりした笑顔の飛行機（560×400、中心 (280, 200)）"""
+    p = pygame.Surface((560, 400), pygame.SRCALPHA)
+    _round_poly(p, [(290, 170), (225, 70), (262, 70), (350, 170)], 14)      # 奥の主翼
+    _round_poly(p, [(88, 185), (40, 70), (92, 70), (170, 185)], 18)         # 垂直尾翼
+    pygame.draw.rect(p, W, pygame.Rect(60, 160, 470, 120), border_radius=60)  # 胴体
+    _round_poly(p, [(110, 235), (40, 285), (92, 290), (175, 245)], 14)      # 水平尾翼
+    _round_poly(p, [(300, 255), (190, 375), (250, 375), (380, 255)], 18)    # 手前の主翼
+    pygame.draw.rect(p, W, pygame.Rect(245, 290, 90, 44), border_radius=22)   # エンジン
+    pygame.draw.circle(p, (0, 0, 0, 0), (330, 312), 12)                     # 吸気口
+    for i in range(5):                                                      # 客室窓
+        pygame.draw.circle(p, (0, 0, 0, 0), (190 + i * 50, 205), 14)
+    # 顔: コックピット窓を目に、機首に笑った口
+    pygame.draw.circle(p, (0, 0, 0, 0), (470, 200), 20)
+    pygame.draw.circle(p, W, (476, 194), 7)                                 # 目のハイライト
+    pygame.draw.arc(p, (0, 0, 0, 0), pygame.Rect(440, 215, 60, 40), math.pi * 1.15, math.pi * 1.85, 8)
+    return p
+
+
 def jet():
-    """ジェット機シルエット（ジェット機エンジンの横）"""
+    """機首を上げた笑顔の飛行機 + 尾部から出る爆音（音波とギザギザ）（ひこうき）"""
+    big = pygame.Surface((SIZE * SS * 2, SIZE * SS * 2), pygame.SRCALPHA)
+    angle, scale, cx, cy = 30, 0.64, 600, 500
+    body = pygame.transform.rotozoom(_cute_plane(), angle, scale)
+    big.blit(body, body.get_rect(center=(cx, cy)))
+
+    # 尾部の位置（機体ローカル (70, 220) を回転・縮小した点）から後方へ爆音を描く
+    a = math.radians(angle)
+    lx, ly = 70 - 280, 220 - 200
+    tx = cx + scale * (lx * math.cos(a) + ly * math.sin(a))
+    ty = cy + scale * (-lx * math.sin(a) + ly * math.cos(a))
+    back = math.pi + a                           # 後方の向き（y 上向きの角度）
+    for r in (58, 94):                           # 音波
+        _arc_band(big, (tx, ty), r, 16, back - 0.6, back + 0.6)
+    for k in (-1, 0, 1):                         # 音波の外側に放射状のギザギザ（セミと同じ表現）
+        t = back + k * 0.55
+        ux, uy = math.cos(t), -math.sin(t)
+        vx, vy = -uy, ux
+        p0 = (tx + ux * 124, ty + uy * 124)
+        p1 = (p0[0] + ux * 34 + vx * 22, p0[1] + uy * 34 + vy * 22)
+        p2 = (p1[0] + ux * 6 - vx * 40, p1[1] + uy * 6 - vy * 40)
+        p3 = (p2[0] + ux * 38 + vx * 22, p2[1] + uy * 38 + vy * 22)
+        _bolt(big, [p0, p1, p2, p3], 16)
+
+    # 描いた範囲を切り出し、余白 6px を残して 128×128 の中央に収める
+    crop = big.subsurface(big.get_bounding_rect())
+    fit = (SIZE - 12) / max(crop.get_width(), crop.get_height())
+    small = pygame.transform.smoothscale(
+        crop, (round(crop.get_width() * fit), round(crop.get_height() * fit)))
     s = new_surf()
-    pygame.draw.polygon(s, W, [
-        (120, 64),            # 機首
-        (86, 54), (60, 50),   # 胴体上面
-        (64, 20),  (50, 20),  # 主翼（上）
-        (38, 52),
-        (20, 48), (8, 30),    # 尾翼
-        (14, 62), (8, 76),
-        (22, 72), (38, 74),
-        (50, 106), (64, 106), # 主翼（下）
-        (60, 76), (86, 72),
-    ])
+    s.blit(small, small.get_rect(center=(SIZE // 2, SIZE // 2)))
     return s
 
 
