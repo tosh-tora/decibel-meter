@@ -214,35 +214,40 @@ def _bolt(s, pts, w):
         pygame.draw.circle(s, W, (round(q[0]), round(q[1])), w // 2)
 
 
-def _cute_plane():
-    """機首を右に向けた、ずんぐりした笑顔の飛行機（560×400、中心 (280, 200)）"""
-    p = pygame.Surface((560, 400), pygame.SRCALPHA)
-    _round_poly(p, [(290, 170), (225, 70), (262, 70), (350, 170)], 14)      # 奥の主翼
-    _round_poly(p, [(88, 185), (40, 70), (92, 70), (170, 185)], 18)         # 垂直尾翼
-    pygame.draw.rect(p, W, pygame.Rect(60, 160, 470, 120), border_radius=60)  # 胴体
-    _round_poly(p, [(110, 235), (40, 285), (92, 290), (175, 245)], 14)      # 水平尾翼
-    _round_poly(p, [(300, 255), (190, 375), (250, 375), (380, 255)], 18)    # 手前の主翼
-    pygame.draw.rect(p, W, pygame.Rect(245, 290, 90, 44), border_radius=22)   # エンジン
-    pygame.draw.circle(p, (0, 0, 0, 0), (330, 312), 12)                     # 吸気口
-    for i in range(5):                                                      # 客室窓
-        pygame.draw.circle(p, (0, 0, 0, 0), (190 + i * 50, 205), 14)
-    # 顔: コックピット窓を目に、機首に笑った口
-    pygame.draw.circle(p, (0, 0, 0, 0), (470, 200), 20)
-    pygame.draw.circle(p, W, (476, 194), 7)                                 # 目のハイライト
-    pygame.draw.arc(p, (0, 0, 0, 0), pygame.Rect(440, 215, 60, 40), math.pi * 1.15, math.pi * 1.85, 8)
+def _airliner():
+    """機首を右に向けた旅客機の側面シルエット（600×300、中心 (300, 150)）"""
+    p = pygame.Surface((600, 300), pygame.SRCALPHA)
+    T = (0, 0, 0, 0)
+    _round_poly(p, [(312, 126), (366, 126), (262, 52), (240, 52)], 4)      # 奥の主翼（後退翼）
+    _round_poly(p, [(64, 124), (26, 34), (56, 34), (156, 124)], 4)          # 垂直尾翼
+    # 胴体: 細長く、機首は丸くすぼめ、尾部は上へ跳ね上げる
+    pygame.draw.polygon(p, W, [
+        (36, 118), (150, 121), (480, 121), (528, 126), (556, 136), (574, 150),
+        (568, 162), (544, 172), (486, 178), (176, 178), (90, 160), (40, 132),
+    ])
+    _round_poly(p, [(78, 146), (18, 188), (44, 190), (136, 156)], 4)        # 水平尾翼
+    _round_poly(p, [(296, 170), (392, 170), (246, 284), (214, 284)], 4)     # 手前の主翼（後退翼）
+    # エンジン: 主翼と同じ白で重なるため、周囲を細く抜いて輪郭を見せる
+    pygame.draw.rect(p, T, pygame.Rect(274, 180, 108, 42), border_radius=20)
+    pygame.draw.rect(p, W, pygame.Rect(318, 172, 20, 14))                   # パイロン
+    pygame.draw.rect(p, W, pygame.Rect(282, 186, 92, 30), border_radius=14)
+    pygame.draw.ellipse(p, T, pygame.Rect(362, 191, 10, 20))                # 吸気口
+    for i in range(15):                                                     # 客室窓
+        pygame.draw.circle(p, T, (184 + i * 20, 140), 5)
+    pygame.draw.polygon(p, T, [(520, 136), (548, 138), (556, 146), (522, 146)])  # 操縦席窓
     return p
 
 
 def jet():
-    """機首を上げた笑顔の飛行機 + 尾部から出る爆音（音波とギザギザ）（ひこうき）"""
+    """上昇中の旅客機 + 尾部から出る爆音（音波とギザギザ）（ジェット機 / ひこうき）"""
     big = pygame.Surface((SIZE * SS * 2, SIZE * SS * 2), pygame.SRCALPHA)
-    angle, scale, cx, cy = 30, 0.64, 600, 500
-    body = pygame.transform.rotozoom(_cute_plane(), angle, scale)
+    angle, scale, cx, cy = 30, 0.9, 600, 500
+    body = pygame.transform.rotozoom(_airliner(), angle, scale)
     big.blit(body, body.get_rect(center=(cx, cy)))
 
-    # 尾部の位置（機体ローカル (70, 220) を回転・縮小した点）から後方へ爆音を描く
+    # 尾部の位置（機体ローカル (50, 140) を回転・縮小した点）から後方へ爆音を描く
     a = math.radians(angle)
-    lx, ly = 70 - 280, 220 - 200
+    lx, ly = 50 - 300, 140 - 150
     tx = cx + scale * (lx * math.cos(a) + ly * math.sin(a))
     ty = cy + scale * (-lx * math.sin(a) + ly * math.cos(a))
     back = math.pi + a                           # 後方の向き（y 上向きの角度）
