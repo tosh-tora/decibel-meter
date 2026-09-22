@@ -6,6 +6,8 @@ Decibel Meter — Concert Hall Sound Level Display
 Calibration is saved to calibration.json and reloaded on next startup.
 
 Controls (Operator window):
+  ↑↓ ←→  — select input device / ASIO channel (device select screen)
+  D      — change input device (startup / calibration screens)
   Space  — start / stop measurement
   R      — re-run calibration
   F      — toggle fullscreen on audience window
@@ -13,6 +15,7 @@ Controls (Operator window):
 """
 
 import json
+import os
 import math
 import threading
 import time
@@ -21,13 +24,16 @@ from pathlib import Path
 
 import numpy as np
 import pygame
-import sounddevice as sd
+
+# sounddevice は import 時に PortAudio を初期化し、この変数が立っていないと
+# ASIO 対応版 DLL を読まない（ASIO デバイスが一覧に出なくなる）。import より前に置くこと。
+os.environ.setdefault("SD_ENABLE_ASIO", "1")
+import sounddevice as sd   # type: ignore[import-untyped]
 
 # ─────────────────────────────────────────────────────────────
 #  Constants
 # ─────────────────────────────────────────────────────────────
-SAMPLE_RATE   = 44100
-BLOCK_SIZE    = 1024          # ~23 ms per callback
+BLOCK_SIZE    = 1024          # ~21–23 ms per callback (44.1/48 kHz)
 ALPHA         = 0.3           # EMA smoothing factor
 HISTORY_SEC   = 60
 UPDATE_HZ     = 12.5          # graph data rate
@@ -106,8 +112,8 @@ class State:
 
         # calibration
         self.calib  = None             # {"a": float, "b": float} or None
-        self.screen = "startup"        # startup | calib_step1 | calib_step2
-                                       # calib_confirm | noise_setup
+        self.screen = "device_select"  # device_select | startup | calib_step1
+                                       # calib_step2 | calib_confirm | noise_setup
                                        # noise_measure | main
         self.calib_pts  = []           # list of (raw_avg, spl_ref) tuples
         self.input_str  = ""           # text input buffer
@@ -137,65 +143,120 @@ class State:
         self.fullscreen     = False
         self.show_overlay   = False    # Tab: operator overlay on audience view
         self.status_msg     = ""       # one-line status for operator panel
-        self.wasapi_exclusive = False  # True when stream opened in WASAPI exclusive mode
+
+        # input device
+        self.devices      = []         # list_input_devices() の結果
+        self.dev_cursor   = 0          # device_select で選択中の行
+        self.asio_channel = 0          # ASIO 入力チャンネル（0 始まり）
+        self.input_mode   = ""         # "ASIO" | "WASAPI 排他" | "WASAPI 共有" | ""（停止中）
+        self.device_label = ""         # 開いているデバイスの表示名（校正ファイルにも保存）
 
 
 # ─────────────────────────────────────────────────────────────
 #  Audio Engine
 # ─────────────────────────────────────────────────────────────
+def list_input_devices():
+    """選択画面に出す入力デバイス（WASAPI / ASIO のみ）を列挙する。
+
+    MME / DirectSound / WDM-KS は同じ物理デバイスの重複なので出さない。
+    WASAPI の既定入力を先頭に置く（Fireface が無いときの既定値になる）。
+    """
+    devs = []
+    for api in sd.query_hostapis():
+        kind = {"Windows WASAPI": "WASAPI", "ASIO": "ASIO"}.get(api["name"])
+        if kind is None:
+            continue
+        for idx in api["devices"]:
+            d = sd.query_devices(idx)
+            if d["max_input_channels"] < 1:
+                continue
+            devs.append({
+                "index":      idx,
+                "api":        kind,
+                "name":       d["name"],
+                "channels":   d["max_input_channels"],
+                "samplerate": d["default_samplerate"],
+                "is_default": kind == "WASAPI" and idx == api["default_input_device"],
+            })
+    devs.sort(key=lambda d: not d["is_default"])   # stable: 既定入力だけ先頭へ
+    return devs
+
+
+def default_device_pos(devs):
+    """既定の選択位置: ASIO の Fireface → WASAPI 既定入力 → 先頭。"""
+    for i, d in enumerate(devs):
+        if d["api"] == "ASIO" and "fireface" in d["name"].lower():
+            return i
+    for i, d in enumerate(devs):
+        if d["is_default"]:
+            return i
+    return 0
+
+
+def device_label(dev, channel):
+    label = f"[{dev['api']}] {dev['name']}"
+    if dev["api"] == "ASIO":
+        label += f" ch{channel + 1}"
+    return label
+
+
 class AudioEngine:
     def __init__(self, state: State):
         self.state  = state
         self.stream = None
+        self.dev     = None    # list_input_devices() の要素。start() 前に設定する
+        self.channel = 0       # ASIO 入力チャンネル（0 始まり）
 
     def start(self):
         if self.stream:
             return
         self._open_stream()
-        self.stream.start()
+        try:
+            self.stream.start()
+        except Exception:
+            self.stream.close()
+            self.stream = None
+            raise
 
     def _open_stream(self):
-        """WASAPI 排他モードを試み、失敗したら共有モードにフォールバックする。
+        """選択デバイスを開く。失敗時は例外を呼び出し側へ投げる。
 
-        排他モードでは Windows のノイズ抑制・エコーキャンセル等が
-        バイパスされるためキャリブレーション精度が向上する。
-        他アプリがマイクを占有している場合などは共有モードで動作する。
+        samplerate はデバイスの既定値を使う。WASAPI 共有モードはミックス形式以外の
+        レートでは開けず、ASIO はドライバ側で設定中のレートに従う必要があるため。
+        device は必ず明示する。未指定だと既定ホスト API（多くは MME）のデバイスに
+        WasapiSettings を渡すことになり、排他モードが常に失敗する。
+        WASAPI はデバイスのネイティブのチャンネル数で開く（マイク配列などは channels=1 だと
+        排他・共有とも拒否される）。_callback は先頭チャンネルだけを使う。
         """
-        # ── WASAPI 排他モードを試みる ────────────────────────
-        try:
-            wasapi = sd.WasapiSettings(exclusive=True)
-            stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                blocksize=BLOCK_SIZE,
-                dtype="float32",
-                channels=1,
-                extra_settings=wasapi,
-                callback=self._callback,
-            )
-            self.stream = stream
-            with self.state.lock:
-                self.state.wasapi_exclusive = True
-                self.state.status_msg = "WASAPI 排他モードで起動"
-            return
-        except Exception:
-            pass  # 排他モード取得失敗 → 共有モードへ
-
-        # ── 共有モード（フォールバック）──────────────────────
-        try:
+        dev = self.dev
+        common = dict(
+            device=dev["index"],
+            samplerate=dev["samplerate"],
+            blocksize=BLOCK_SIZE,
+            dtype="float32",
+            callback=self._callback,
+        )
+        if dev["api"] == "ASIO":
             self.stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                blocksize=BLOCK_SIZE,
-                dtype="float32",
                 channels=1,
-                callback=self._callback,
-            )
-            with self.state.lock:
-                self.state.wasapi_exclusive = False
-                self.state.status_msg = "共有モードで起動（Windows音声処理が有効）"
-        except Exception as e:
-            with self.state.lock:
-                self.state.status_msg = f"マイク起動失敗: {e}"
-            raise
+                extra_settings=sd.AsioSettings(channel_selectors=[self.channel]), **common)
+            mode = "ASIO"
+        else:
+            # WASAPI 排他モードでは Windows のノイズ抑制・エコーキャンセル等が
+            # バイパスされるためキャリブレーション精度が向上する。
+            # 他アプリがマイクを占有している場合などは共有モードで動作する。
+            try:
+                self.stream = sd.InputStream(
+                    channels=dev["channels"],
+                    extra_settings=sd.WasapiSettings(exclusive=True), **common)
+                mode = "WASAPI 排他"
+            except Exception:
+                self.stream = sd.InputStream(channels=dev["channels"], **common)
+                mode = "WASAPI 共有"
+        with self.state.lock:
+            self.state.input_mode   = mode
+            self.state.device_label = device_label(dev, self.channel)
+            self.state.status_msg   = ""
 
     def stop(self):
         if self.stream:
@@ -203,7 +264,7 @@ class AudioEngine:
             self.stream.close()
             self.stream = None
             with self.state.lock:
-                self.state.wasapi_exclusive = False
+                self.state.input_mode = ""
 
     def _callback(self, indata, frames, time_info, status):
         rms = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
@@ -449,6 +510,25 @@ def draw_graph(surf, history, area: pygame.Rect, font_s):
 # ─────────────────────────────────────────────────────────────
 #  Screen: Operator window
 # ─────────────────────────────────────────────────────────────
+DEV_LIST_TOP = 118     # device_select の一覧の上端 y
+DEV_ROW_H    = 38
+DEV_FOOTER_H = 170     # 一覧の下に確保する高さ（チャンネル欄・操作説明・ステータス）
+
+
+def _dev_visible_range(state: State, H: int):
+    """一覧の表示範囲 (first, count)。行数が画面に収まらないときは選択行を追ってスクロールする。"""
+    n = len(state.devices)
+    rows = max(1, (H - DEV_LIST_TOP - DEV_FOOTER_H) // DEV_ROW_H)
+    if n <= rows:
+        return 0, n
+    first = min(max(0, state.dev_cursor - rows // 2), n - rows)
+    return first, rows
+
+
+def _dev_row_rect(i_visible: int, W: int) -> pygame.Rect:
+    return pygame.Rect(36, DEV_LIST_TOP + i_visible * DEV_ROW_H, W - 72, DEV_ROW_H - 4)
+
+
 def draw_operator(surf, state: State, fonts):
     W, H = surf.get_size()
     surf.fill((14, 14, 14))
@@ -469,13 +549,66 @@ def draw_operator(surf, state: State, fonts):
 
     y = 70
 
+    # ── Input device select ──────────────────────────────────
+    if scr == "device_select":
+        draw_text(surf, "入力デバイス選択", f_title, C_ACCENT, 40, y)
+        y = DEV_LIST_TOP
+        devs = state.devices
+        if not devs:
+            line("WASAPI / ASIO の入力デバイスが見つかりません", 40, y, C_ERR)
+            y += DEV_ROW_H
+        else:
+            first, count = _dev_visible_range(state, H)
+            for vi in range(count):
+                i = first + vi
+                d = devs[i]
+                sel = (i == state.dev_cursor)
+                fg = C_ACCENT if sel else C_TEXT
+                r = _dev_row_rect(vi, W)
+                if sel:
+                    pygame.draw.rect(surf, (28, 28, 28), r, border_radius=6)
+                    pygame.draw.rect(surf, C_ACCENT, r, 1, border_radius=6)
+                text = f"{'▶ ' if sel else '  '}[{d['api']}] {d['name']}"
+                if d["is_default"]:
+                    text += "（既定）"
+                draw_text(surf, text, f_body, fg, r.left + 12, r.centery, anchor="midleft")
+                draw_text(surf, f"{d['channels']}ch  {d['samplerate'] / 1000:g}kHz", f_small,
+                          C_DIM, r.right - 12, r.centery, anchor="midright")
+            if count < len(devs):
+                draw_text(surf, f"{first + 1}-{first + count} / {len(devs)}", f_small, C_DIM,
+                          W - 40, DEV_LIST_TOP - 6, anchor="bottomright")
+            y = DEV_LIST_TOP + count * DEV_ROW_H
+
+        y += 14
+        dev = devs[state.dev_cursor] if devs else None
+        if dev and dev["api"] == "ASIO":
+            draw_text(surf, f"入力チャンネル:  ◀  {state.asio_channel + 1}  ▶   / {dev['channels']}",
+                      f_body, C_ACCENT, 40, y)
+        else:
+            draw_text(surf, "入力チャンネル:  —（ASIO のみ選択可）", f_body, C_DIM, 40, y)
+        y += 44
+
+        line("[↑↓ / クリック] デバイス   [←→] チャンネル", 40, y, C_DIM)
+        y += 26
+        line("[Enter] 決定   [F5] 再スキャン", 40, y, C_OK)
+
     # ── Calibration screens ──────────────────────────────────
-    if scr == "startup":
+    elif scr == "startup":
         calib = state.calib
         draw_text(surf, "前回のキャリブレーションを読み込みました", f_body, C_OK, W // 2, y, anchor="midtop")
         y += 32
         draw_text(surf, f"  a = {calib['a']:.4f}   b = {calib['b']:.4f}", f_mono, C_DIM, W // 2, y, anchor="midtop")
-        y += 48
+        y += 28
+        draw_text(surf, f"入力: {state.device_label}（{state.input_mode}）", f_small, C_DIM,
+                  W // 2, y, anchor="midtop")
+        y += 22
+        # 校正値は入力経路（デバイス・チャンネル・ゲイン）ごとに異なる
+        calib_dev = calib.get("device")
+        if calib_dev != state.device_label:
+            src = calib_dev or "不明"
+            draw_text(surf, f"※ 別のデバイスで校正された値です（校正時: {src}）  [R] で再校正",
+                      f_small, C_WARN, W // 2, y, anchor="midtop")
+        y += 26
 
         raw  = state.current_raw
         spl  = state.current_spl
@@ -487,6 +620,8 @@ def draw_operator(surf, state: State, fonts):
         line("[S]  スキップしてスタート", 40, y, C_DIM)
         y += 26
         line("[R]  再キャリブレーション", 40, y, C_DIM)
+        y += 26
+        line("[D]  入力デバイスを変更", 40, y, C_DIM)
 
     elif scr in ("calib_step1", "calib_step2"):
         step = 1 if scr == "calib_step1" else 2
@@ -529,6 +664,8 @@ def draw_operator(surf, state: State, fonts):
             line("[S] 1点のみで確定（精度低）", 40, y, C_DIM)
             y += 26
         line("[R] 最初からやり直し", 40, y, C_DIM)
+        y += 26
+        line(f"[D] 入力デバイスを変更（現在: {state.device_label}）", 40, y, C_DIM)
 
     elif scr == "calib_confirm":
         c = state.confirm_calib
@@ -646,6 +783,9 @@ def draw_operator(surf, state: State, fonts):
         for k, kc in keys:
             draw_text(surf, k, f_small, kc, 40, y)
             y += 22
+
+    if state.status_msg:
+        draw_text(surf, state.status_msg, f_small, C_WARN, 40, H - 16, anchor="bottomleft")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -916,6 +1056,24 @@ def handle_key(event, state: State, audio: AudioEngine):
     if key in (pygame.K_q, pygame.K_ESCAPE):
         return False   # signal quit
 
+    # ── Input device select ──────────────────────────────────
+    if scr == "device_select":
+        n = len(state.devices)
+        if key == pygame.K_UP and n:
+            _set_dev_cursor(state, state.dev_cursor - 1)
+        elif key == pygame.K_DOWN and n:
+            _set_dev_cursor(state, state.dev_cursor + 1)
+        elif key in (pygame.K_LEFT, pygame.K_RIGHT) and n:
+            dev = state.devices[state.dev_cursor]
+            if dev["api"] == "ASIO":
+                step = 1 if key == pygame.K_RIGHT else -1
+                state.asio_channel = min(dev["channels"] - 1, max(0, state.asio_channel + step))
+        elif key == pygame.K_F5:
+            _rescan_devices(state)
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            _open_selected_device(state, audio)
+        return True
+
     # ── Calibration text input ───────────────────────────────
     if scr in ("calib_step1", "calib_step2", "startup"):
         if scr in ("calib_step1", "calib_step2"):
@@ -967,6 +1125,12 @@ def handle_key(event, state: State, audio: AudioEngine):
             _reset_calib(state)
             return True
 
+        if key == pygame.K_d:
+            audio.stop()
+            _rescan_devices(state)
+            state.screen = "device_select"
+            return True
+
         # S = skip (1-point or direct jump)
         if key == pygame.K_s:
             if scr == "startup":
@@ -989,7 +1153,8 @@ def handle_key(event, state: State, audio: AudioEngine):
 
     elif scr == "calib_confirm":
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_s):
-            state.calib = state.confirm_calib
+            # 校正値は入力経路ごとに異なるので、どのデバイスで取った値かを残す
+            state.calib = dict(state.confirm_calib, device=state.device_label)
             save_calib(state.calib)
             state.screen = "noise_setup"
             audio.start()
@@ -1079,6 +1244,55 @@ def _reset_calib(state: State):
     state.nf_frozen   = False
 
 
+def _set_dev_cursor(state: State, pos: int):
+    n = len(state.devices)
+    if not n:
+        return
+    state.dev_cursor = pos % n
+    dev = state.devices[state.dev_cursor]
+    state.asio_channel = min(state.asio_channel, max(0, dev["channels"] - 1))
+
+
+def _rescan_devices(state: State):
+    """デバイス一覧を取り直す（Fireface を後から接続した場合など）。
+
+    PortAudio はデバイス一覧を初期化時にしか読まないため、開いているストリームが
+    無い状態で再初期化する（呼び出し側で audio.stop() 済みであること）。
+    """
+    prev = state.devices[state.dev_cursor] if state.devices else None
+    try:
+        sd._terminate()
+        sd._initialize()
+        state.devices = list_input_devices()
+    except Exception as e:
+        state.status_msg = f"デバイス一覧の取得に失敗: {e}"
+        return
+    # 直前に選んでいたデバイスが残っていればそれを選び直す
+    pos = None
+    if prev:
+        pos = next((i for i, d in enumerate(state.devices)
+                    if (d["api"], d["name"]) == (prev["api"], prev["name"])), None)
+    state.dev_cursor = default_device_pos(state.devices) if pos is None else pos
+    _set_dev_cursor(state, state.dev_cursor)
+
+
+def _open_selected_device(state: State, audio: AudioEngine):
+    if not state.devices:
+        state.status_msg = "入力デバイスがありません（接続して F5 で再スキャン）"
+        return
+    dev = state.devices[state.dev_cursor]
+    audio.stop()
+    audio.dev = dev
+    audio.channel = state.asio_channel if dev["api"] == "ASIO" else 0
+    try:
+        audio.start()
+    except Exception as e:
+        # 開けなければ落とさず選択画面に留まり、別デバイスを選べるようにする
+        state.status_msg = f"入力デバイスを開けません: {e}"
+        return
+    state.screen = "startup" if state.calib else "calib_step1"
+
+
 def _start_nf_measure(state: State):
     state.nf_buf      = []
     state.nf_measuring = True
@@ -1117,16 +1331,12 @@ def main():
     state = State()
     audio = AudioEngine(state)
 
-    # Start audio immediately for live calibration display
-    audio.start()
-
-    # Startup: load existing calibration?
-    saved = load_calib()
-    if saved:
-        state.calib  = saved
-        state.screen = "startup"
-    else:
-        state.screen = "calib_step1"
+    # 校正ファイルを先に読み、デバイス選択の決定後に startup / calib_step1 へ進む。
+    # 音声はデバイス確定時に開始する（校正画面のライブ入力表示に使う）。
+    state.calib   = load_calib()
+    state.devices = list_input_devices()
+    _set_dev_cursor(state, default_device_pos(state.devices))
+    state.screen  = "device_select"
 
     # ── Main loop ─────────────────────────────────────────────
     clock = pygame.time.Clock()
@@ -1142,6 +1352,8 @@ def main():
                 if not handle_key(event, state, audio):
                     running = False
                     break
+            if event.type == pygame.MOUSEBUTTONDOWN and state.screen == "device_select":
+                _handle_device_click(event, state, screen.get_size())
 
         if not running:
             break
@@ -1163,10 +1375,24 @@ def main():
     pygame.quit()
 
 
+def _handle_device_click(event, state: State, size):
+    W, H = size
+    if event.button == 4:        # wheel up
+        _set_dev_cursor(state, state.dev_cursor - 1)
+    elif event.button == 5:      # wheel down
+        _set_dev_cursor(state, state.dev_cursor + 1)
+    elif event.button == 1:
+        first, count = _dev_visible_range(state, H)
+        for vi in range(count):
+            if _dev_row_rect(vi, W).collidepoint(event.pos):
+                _set_dev_cursor(state, first + vi)
+                break
+
+
 def _draw_overlay(surf, state: State, fonts):
     """Semi-transparent operator info panel (Tab to toggle)."""
     W, H = surf.get_size()
-    panel_w, panel_h = 380, 276
+    panel_w, panel_h = 380, 298
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((10, 10, 10, 210))
 
@@ -1176,12 +1402,12 @@ def _draw_overlay(surf, state: State, fonts):
     threshold = f"{nf + state.nf_settings['margin']:.1f}" if nf is not None else "---"
     gate_str  = f"GATE {threshold} dB {'🔇' if state.nf_frozen else '  '}" if nf is not None else "GATE  off"
 
-    if state.wasapi_exclusive:
-        mode_str  = "WASAPI 排他"
-        mode_col  = (100, 200, 100)
-    else:
-        mode_str  = "共有モード"
-        mode_col  = (200, 140, 60)
+    mode_str = state.input_mode or "停止"
+    # 共有モードは Windows の音声処理（ノイズ抑制等）が掛かるので注意色
+    mode_col = (100, 200, 100) if state.input_mode in ("ASIO", "WASAPI 排他") else (200, 140, 60)
+    dev_str  = state.device_label
+    if len(dev_str) > 30:
+        dev_str = dev_str[:29] + "…"
 
     aud_mode_str = "大人・子ども" if state.aud_mode == "kids" else "大人"
     lines = [
@@ -1190,6 +1416,7 @@ def _draw_overlay(surf, state: State, fonts):
         (f"SPL  {state.current_spl:.1f} dB",      (210, 210, 210)),
         (gate_str,                                (100, 180, 100) if not state.nf_frozen else (180, 100, 100)),
         (f"MIC  {mode_str}",                      mode_col),
+        (f"     {dev_str}",                       (120, 120, 120)),
         (f"VIEW {aud_mode_str}モード",            (160, 160, 160)),
         ("",                                      (0, 0, 0)),
         ("[SPACE] 開始/停止  [N] 暗騒音測定",      (100, 100, 100)),
