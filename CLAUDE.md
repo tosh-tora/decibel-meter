@@ -32,12 +32,14 @@ main() ループ (30 fps)
 ## 画面遷移
 
 ```
-startup (calib読込あり)
-calib_step1 → calib_step2 → calib_confirm
+device_select → startup (calib読込あり)
+             └→ calib_step1 → calib_step2 → calib_confirm
 noise_setup → noise_measure → main
 ```
 
-- `startup`: 保存済み calibration を表示。Enter → `noise_setup`、S → `main`、R → `calib_step1`
+- `device_select`: 起動時に必ず表示。`list_input_devices()` の一覧から ↑↓/クリックで選び、ASIO なら ←→ でチャンネル選択。Enter で `AudioEngine` を開いて startup（校正あり）/ calib_step1 へ。開けなければ `status_msg` にエラーを出して留まる。F5 で再スキャン（`_rescan_devices`）
+
+- `startup`: 保存済み calibration を表示。Enter → `noise_setup`、S → `main`、R → `calib_step1`、D → `device_select`（calib_step1/2 でも D 可）。校正時のデバイス（`calibration.json` の `device`）が現在と違えば警告
 - `calib_step1/2`: 騒音計の参照値を入力。raw_buf の平均値を使って回帰
 - `calib_confirm`: プレビュー確認後 `calibration.json` へ保存
 - `noise_setup`: 暗騒音測定パラメータ設定（duration / percentile / margin）
@@ -85,11 +87,14 @@ noise_setup → noise_measure → main
 `nf_floor`（パーセンタイル計算）+ `nf_settings["margin"]` dB が閾値。  
 `current_spl < threshold` のとき `nf_frozen = True`、観客画面の数字が暗くなり `nf_frozen_val`（直前値）を表示・記録する。
 
-## WASAPI
+## オーディオ入力（WASAPI / ASIO）
 
-`AudioEngine._open_stream()` で排他モード（`WasapiSettings(exclusive=True)`）を先に試みる。  
-失敗（他アプリが占有など）は黙って共有モードにフォールバック。  
-`state.wasapi_exclusive` で現在のモードを保持し、オーバーレイに表示。
+- `SD_ENABLE_ASIO` を `import sounddevice` より前に設定する（ASIO 対応 DLL の読み込みに必要。sounddevice>=0.5.1）
+- `list_input_devices()`: WASAPI / ASIO の入力デバイスだけを列挙し、WASAPI の既定入力を先頭に置く。`default_device_pos()` は ASIO の Fireface → WASAPI の既定入力の順で既定の選択を決める
+- `AudioEngine._open_stream()`: device は必ず明示し、samplerate はデバイスの既定値にする
+  - ASIO: `channels=1` + `AsioSettings(channel_selectors=[ch])`
+  - WASAPI: ネイティブのチャンネル数で排他を試み、失敗したら共有で開く（`_callback` は先頭チャンネルだけを使う）
+- 現在のモード（`state.input_mode`）とデバイス名（`state.device_label`）をオーバーレイに表示
 
 ## フォント
 
@@ -101,7 +106,7 @@ noise_setup → noise_measure → main
 ```
 decibel_meter.py         # アプリ本体（全ロジック）
 requirements.txt         # 依存パッケージ
-calibration.json         # キャリブレーション保存（自動生成）
+calibration.json         # キャリブレーション保存（自動生成、校正時のデバイス名も保存）
 specification.md         # 企画仕様書
 icons/                   # 騒音レベルラベル用アイコン（白ピクトグラム PNG、同名差し替え可）
 tools/generate_icons.py  # 仮アイコンの生成スクリプト
