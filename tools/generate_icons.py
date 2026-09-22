@@ -189,12 +189,12 @@ def ambulance():
 SS = 4   # jet() は 4 倍の解像度で描いて縮小する（斜めの輪郭をなめらかにするため）
 
 
-def _round_poly(s, pts, r):
+def _round_poly(s, pts, r, color=W):
     """角を半径 r で丸めた多角形（太い外周線と頂点の円で角を埋める）"""
-    pygame.draw.polygon(s, W, pts)
-    pygame.draw.lines(s, W, True, pts, r * 2)
+    pygame.draw.polygon(s, color, pts)
+    pygame.draw.lines(s, color, True, pts, r * 2)
     for p in pts:
-        pygame.draw.circle(s, W, p, r)
+        pygame.draw.circle(s, color, p, r)
 
 
 def _arc_band(s, c, r, w, a0, a1, n=24):
@@ -214,54 +214,56 @@ def _bolt(s, pts, w):
         pygame.draw.circle(s, W, (round(q[0]), round(q[1])), w // 2)
 
 
+PLANE_TILT = 15     # 機首上げの角度（度）。_airliner() はこの傾きで直接描く
+
+
 def _airliner():
-    """機首を右に向けた旅客機の側面シルエット（600×300、中心 (300, 150)）"""
-    p = pygame.Surface((600, 300), pygame.SRCALPHA)
-    T = (0, 0, 0, 0)
-    _round_poly(p, [(312, 126), (366, 126), (262, 52), (240, 52)], 4)      # 奥の主翼（後退翼）
-    _round_poly(p, [(64, 124), (26, 34), (56, 34), (156, 124)], 4)          # 垂直尾翼
-    # 胴体: 細長く、機首は丸くすぼめ、尾部は上へ跳ね上げる
-    pygame.draw.polygon(p, W, [
-        (36, 118), (150, 121), (480, 121), (528, 126), (556, 136), (574, 150),
-        (568, 162), (544, 172), (486, 178), (176, 178), (90, 160), (40, 132),
-    ])
-    _round_poly(p, [(78, 146), (18, 188), (44, 190), (136, 156)], 4)        # 水平尾翼
-    _round_poly(p, [(296, 170), (392, 170), (246, 284), (214, 284)], 4)     # 手前の主翼（後退翼）
-    # エンジン: 主翼と同じ白で重なるため、周囲を細く抜いて輪郭を見せる
-    pygame.draw.rect(p, T, pygame.Rect(274, 180, 108, 42), border_radius=20)
-    pygame.draw.rect(p, W, pygame.Rect(318, 172, 20, 14))                   # パイロン
-    pygame.draw.rect(p, W, pygame.Rect(282, 186, 92, 30), border_radius=14)
-    pygame.draw.ellipse(p, T, pygame.Rect(362, 191, 10, 20))                # 吸気口
-    for i in range(15):                                                     # 客室窓
-        pygame.draw.circle(p, T, (184 + i * 20, 140), 5)
-    pygame.draw.polygon(p, T, [(520, 136), (548, 138), (556, 146), (522, 146)])  # 操縦席窓
+    """機首を右上に上げた旅客機の側面シルエット（840×540、座標は 420×270 基準を 2 倍）"""
+    k = 2
+    p = pygame.Surface((420 * k, 270 * k), pygame.SRCALPHA)
+
+    def poly(pts, r=5, gap=0):
+        """gap > 0 なら先に一回り大きく透明で抜き、下の部品との境目を見せる
+        （白一色のシルエットだと胴体と翼が一体化して形が読めないため）"""
+        pts = [(x * k, y * k) for x, y in pts]
+        if gap:
+            _round_poly(p, pts, (r + gap) * k, color=(0, 0, 0, 0))
+        _round_poly(p, pts, r * k)
+
+    poly([(175, 108), (112, 54), (122, 46), (166, 46), (214, 68), (238, 93)])   # 奥の主翼
+    poly([(14, 96), (44, 88), (92, 122), (52, 152)])                            # 垂直尾翼（後傾）
+    poly([(70, 150), (96, 146), (58, 204), (42, 204)])                          # 水平尾翼
+    # 胴体: 太めで機首は丸く、尾部に向けて下面をすぼめる
+    poly([(90, 124), (330, 64), (362, 64), (384, 77), (392, 97), (381, 113),
+          (360, 121), (250, 150), (170, 174), (115, 180), (78, 168), (52, 150)], 6, gap=5)
+    poly([(214, 146), (282, 128), (224, 236), (160, 246)], 6, gap=5)            # 手前の主翼
+    for i in range(7):                                                          # 客室窓
+        x = 150 + i * 28
+        pygame.draw.circle(p, (0, 0, 0, 0), (x * k, round((131 - (x - 150) * 0.265) * k)), 4 * k)
     return p
 
 
 def jet():
     """上昇中の旅客機 + 尾部から出る爆音（音波とギザギザ）（ジェット機 / ひこうき）"""
-    big = pygame.Surface((SIZE * SS * 2, SIZE * SS * 2), pygame.SRCALPHA)
-    angle, scale, cx, cy = 30, 0.9, 600, 500
-    body = pygame.transform.rotozoom(_airliner(), angle, scale)
-    big.blit(body, body.get_rect(center=(cx, cy)))
+    big = pygame.Surface((SIZE * SS * 3, SIZE * SS * 3), pygame.SRCALPHA)
+    ox, oy = 500, 300
+    big.blit(_airliner(), (ox, oy))
 
-    # 尾部の位置（機体ローカル (50, 140) を回転・縮小した点）から後方へ爆音を描く
-    a = math.radians(angle)
-    lx, ly = 50 - 300, 140 - 150
-    tx = cx + scale * (lx * math.cos(a) + ly * math.sin(a))
-    ty = cy + scale * (-lx * math.sin(a) + ly * math.cos(a))
-    back = math.pi + a                           # 後方の向き（y 上向きの角度）
+    # 尾部（420×270 基準で (40, 150)）から機軸の後方へ爆音を描く
+    tx, ty = ox + 40 * 2, oy + 150 * 2
+    back = math.pi + math.radians(PLANE_TILT)    # 後方の向き（y 上向きの角度）
+    n = 1.7                                      # 爆音の大きさ（機体との比率）
     for r in (58, 94):                           # 音波
-        _arc_band(big, (tx, ty), r, 16, back - 0.6, back + 0.6)
-    for k in (-1, 0, 1):                         # 音波の外側に放射状のギザギザ（セミと同じ表現）
-        t = back + k * 0.55
+        _arc_band(big, (tx, ty), r * n, 16 * n, back - 0.6, back + 0.6)
+    for kk in (-1, 0, 1):                        # 音波の外側に放射状のギザギザ（セミと同じ表現）
+        t = back + kk * 0.55
         ux, uy = math.cos(t), -math.sin(t)
         vx, vy = -uy, ux
-        p0 = (tx + ux * 124, ty + uy * 124)
-        p1 = (p0[0] + ux * 34 + vx * 22, p0[1] + uy * 34 + vy * 22)
-        p2 = (p1[0] + ux * 6 - vx * 40, p1[1] + uy * 6 - vy * 40)
-        p3 = (p2[0] + ux * 38 + vx * 22, p2[1] + uy * 38 + vy * 22)
-        _bolt(big, [p0, p1, p2, p3], 16)
+        p0 = (tx + ux * 124 * n, ty + uy * 124 * n)
+        p1 = (p0[0] + (ux * 34 + vx * 22) * n, p0[1] + (uy * 34 + vy * 22) * n)
+        p2 = (p1[0] + (ux * 6 - vx * 40) * n, p1[1] + (uy * 6 - vy * 40) * n)
+        p3 = (p2[0] + (ux * 38 + vx * 22) * n, p2[1] + (uy * 38 + vy * 22) * n)
+        _bolt(big, [p0, p1, p2, p3], round(16 * n))
 
     # 描いた範囲を切り出し、余白 6px を残して 128×128 の中央に収める
     crop = big.subsurface(big.get_bounding_rect())
