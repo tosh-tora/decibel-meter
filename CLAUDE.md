@@ -51,7 +51,7 @@ noise_setup → noise_measure → main
 | 定数 | 既定値 | 役割 |
 |------|--------|------|
 | `ALPHA` | 0.3 | EMA 平滑化係数（小さいほど滑らか） |
-| `HISTORY_SEC` | 120 | グラフ表示秒数 |
+| `HISTORY_SEC` | 60 | グラフ表示秒数 |
 | `UPDATE_HZ` | 12.5 | グラフ更新レート |
 | `DISP_HZ` | 3.0 | 観客画面の数字更新レート（インターバル内の最大値を表示） |
 | `UPDATE_FLASH_SEC` | 0.8 | kids メーターの最大/最小 更新フラッシュの表示秒数 |
@@ -99,7 +99,7 @@ noise_setup → noise_measure → main
 ## フォント
 
 `meiryo,yu gothic,ms gothic` を優先して日本語表示。  
-観客画面の数字は 260pt ボールド（`aud_num`）、単位は 80pt（`aud_unit`）。
+観客画面の数字・単位は `_get_sysf` で動的サイズ（「フォントスケール」参照）。`fonts` の `aud_num` / `aud_unit` は未使用。
 
 ## ファイル構成
 
