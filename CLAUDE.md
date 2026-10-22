@@ -19,7 +19,7 @@ python decibel_meter.py
 
 ```
 AudioEngine._callback()  ─── state.lock ───┐
-  RMS → dBFS → EMA平滑化 → dB SPL           │
+  ローカットHPF → RMS → dBFS → EMA → dB SPL │
   ノイズゲート判定                           │
   history deque 追記                        │
                                             ↓
@@ -42,7 +42,7 @@ noise_setup → noise_measure → main
 - `startup`: 保存済み calibration を表示。Enter → `noise_setup`、S → `main`、R → `calib_step1`、D → `device_select`（calib_step1/2 でも D 可）。校正時のデバイス（`calibration.json` の `device`）が現在と違えば警告
 - `calib_step1/2`: 騒音計の参照値を入力。raw_buf の平均値を使って回帰
 - `calib_confirm`: プレビュー確認後 `calibration.json` へ保存
-- `noise_setup`: 暗騒音測定パラメータ設定（duration / percentile / margin）
+- `noise_setup`: ローカット（先頭行）と暗騒音測定パラメータ（duration / percentile / margin）の設定
 - `noise_measure`: 自動タイマー計測、完了で `main` へ遷移
 - `main`: 計測画面（大型 dB 表示 + 折れ線グラフ）。`SPACE` で計測開始/停止。**再開時**は履歴に切れ目マーカー `(t, None)` を挿入して折れ線を停止前とつなげず、最大/最小（`spl_max/min` とその `_t`）・`spl_sum/count` をリセットする
 
@@ -60,12 +60,21 @@ noise_setup → noise_measure → main
 | `DB_COLORS` | 70/90/110 dB | グラフ折れ線・統計値（最大/最小）の色閾値（シアングリーン/明黄/明橙/明赤） |
 | `DB_GRADIENT` | 40/65/85/105/120 dB | アイコン・キャプション用の連続グラデーション基準点（青→緑→黄→橙→赤、`db_color_smooth` で線形補間） |
 | `NOISE_LABELS` | 30〜120 dB の7段階 | 騒音レベルラベル（上限dB, 大人ラベル, 大人アイコン, 子どもラベル, 子どもアイコン） |
+| `LOWCUT_OPTIONS` | [0,50,63,80,100,125,160] | ローカットのカットオフ候補 Hz（0 = オフ） |
 
 ## キャリブレーション
 
 - 2点: `dB_SPL = a * dB_raw + b`（`calib_from_two_points`）
 - 1点: `a=1.0`, `b = spl_ref - raw_avg`（`calib_from_one_point`）
 - 保存先: `calibration.json`（スクリプトと同階層）
+
+## ローカットフィルタ
+
+- ホールの空調ノイズ（低域ランブル）対策。`_callback` で RMS の前に 4次バターワース HPF（24 dB/oct）を掛ける。校正値・暗騒音・ゲートはすべてフィルタ後の信号基準
+- `lowcut_sos(fc, sr)` が RBJ biquad 2段の係数を作り、`apply_sos()`（純 Python、scipy 非依存）がブロック間でフィルタ状態を引き継いで処理。`AudioEngine` は `(Hz, samplerate)` が変わったら係数を作り直し状態をリセット
+- 設定は `State.lowcut_hz`。`noise_setup` の先頭行で ←→ 選択し、`calibration.json` の `lowcut` に即保存（起動時に復元）。校正時の値は `calib_lowcut` に残す
+- 校正は 1 kHz / 440 Hz の純音で行う想定で、どのカットオフでもその帯域の減衰は 0.1 dB 未満。そのため `lowcut` と `calib_lowcut` の不一致は警告にせず、noise_setup / startup に `C_DIM` の参考表示だけ出す
+- 125 / 160 Hz は低音楽器を削るため通常は使わない想定。Tab オーバーレイに `LOW-CUT` を表示
 
 ## 観客画面の表示ロジック
 
