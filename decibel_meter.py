@@ -44,6 +44,9 @@ RAW_BUF_MAX   = int(3 * UPDATE_HZ)   # 3 s window for calibration snapshot
 
 CALIB_FILE    = Path(__file__).parent / "calibration.json"
 
+# ローカット（空調ノイズ対策の HPF）のカットオフ候補 Hz。0 = オフ
+LOWCUT_OPTIONS = [0, 50, 63, 80, 100, 125, 160]
+
 # Colors
 BG         = (10, 10, 10)
 C_TEXT     = (210, 210, 210)
@@ -125,7 +128,7 @@ class State:
         self.nf_buf       = []         # SPL samples collected during measurement
         self.nf_measuring = False      # currently measuring?
         self.nf_start_t   = 0.0        # measurement start time
-        self.nf_cursor    = 0          # selected row in noise_setup (0/1/2)
+        self.nf_cursor    = 0          # selected row in noise_setup (0=lowcut, 1-3=nf_settings)
         self.nf_frozen    = False      # gate is currently holding display
         self.nf_frozen_val = 0.0       # last SPL value before freeze
 
@@ -150,6 +153,7 @@ class State:
         self.asio_channel = 0          # ASIO 入力チャンネル（0 始まり）
         self.input_mode   = ""         # "ASIO" | "WASAPI 排他" | "WASAPI 共有" | ""（停止中）
         self.device_label = ""         # 開いているデバイスの表示名（校正ファイルにも保存）
+        self.lowcut_hz    = 0          # ローカットのカットオフ Hz（LOWCUT_OPTIONS の値、0 = オフ）
 
 
 # ─────────────────────────────────────────────────────────────
@@ -200,12 +204,47 @@ def device_label(dev, channel):
     return label
 
 
+def lowcut_sos(fc, sr):
+    """4次バターワース HPF（24 dB/oct）を biquad 2段で返す。[(b0, b1, b2, a1, a2), ...]
+
+    RBJ Audio EQ Cookbook の HPF を、4次バターワースの極に対応する Q で2段重ねる。
+    """
+    w0 = 2.0 * math.pi * fc / sr
+    cw, sw = math.cos(w0), math.sin(w0)
+    sos = []
+    for q in (0.5411961, 1.3065630):
+        alpha = sw / (2.0 * q)
+        a0 = 1.0 + alpha
+        b0 = (1.0 + cw) / 2.0 / a0
+        sos.append((b0, -2.0 * b0, b0, -2.0 * cw / a0, (1.0 - alpha) / a0))
+    return sos
+
+
+def apply_sos(x, sos, zi):
+    """biquad 列を Direct Form II transposed で掛ける。zi（段ごとの [z1, z2]）は更新して
+    次ブロックへ引き継ぐ。scipy に依存しないための純 Python 実装（1024 サンプルで ~1–2 ms）。"""
+    y = x.tolist()
+    for (b0, b1, b2, a1, a2), z in zip(sos, zi):
+        z1, z2 = z
+        for i, v in enumerate(y):
+            out = b0 * v + z1
+            z1 = b1 * v - a1 * out + z2
+            z2 = b2 * v - a2 * out
+            y[i] = out
+        z[0], z[1] = z1, z2
+    return np.asarray(y, dtype=np.float64)
+
+
 class AudioEngine:
     def __init__(self, state: State):
         self.state  = state
         self.stream = None
         self.dev     = None    # list_input_devices() の要素。start() 前に設定する
         self.channel = 0       # ASIO 入力チャンネル（0 始まり）
+        # ローカットフィルタ。設定（Hz, samplerate）が変わったら係数を作り直し状態をリセット
+        self._sos     = None
+        self._zi      = None
+        self._sos_key = None
 
     def start(self):
         if self.stream:
@@ -229,6 +268,7 @@ class AudioEngine:
         排他・共有とも拒否される）。_callback は先頭チャンネルだけを使う。
         """
         dev = self.dev
+        self._sos_key = None   # 新しいストリームではフィルタ状態を作り直す
         common = dict(
             device=dev["index"],
             samplerate=dev["samplerate"],
@@ -267,7 +307,18 @@ class AudioEngine:
                 self.state.input_mode = ""
 
     def _callback(self, indata, frames, time_info, status):
-        rms = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
+        x = indata[:, 0]
+        hz = self.state.lowcut_hz
+        if hz:
+            key = (hz, self.dev["samplerate"])
+            if key != self._sos_key:
+                self._sos     = lowcut_sos(*key)
+                self._zi      = [[0.0, 0.0] for _ in self._sos]
+                self._sos_key = key
+            x = apply_sos(x, self._sos, self._zi)
+        else:
+            self._sos_key = None
+        rms = float(np.sqrt(np.mean(x ** 2)))
         if rms < 1e-9:
             return
         raw = 20.0 * math.log10(rms)
@@ -351,6 +402,10 @@ def calib_from_two_points(p1, p2):
 
 def calib_from_one_point(raw, spl):
     return {"a": 1.0, "b": round(spl - raw, 4)}
+
+
+def lowcut_str(hz):
+    return f"{hz} Hz" if hz else "オフ"
 
 
 def save_calib(calib):
@@ -616,6 +671,13 @@ def draw_operator(surf, state: State, fonts):
             src = calib_dev or "不明"
             draw_text(surf, f"※ 別のデバイスで校正された値です（校正時: {src}）  [R] で再校正",
                       f_small, C_WARN, W // 2, y, anchor="midtop")
+        y += 22
+        # 校正時のローカット差は通常影響しない（純音で校正するため）ので参考表示に留める
+        lc_str = f"ローカット: {lowcut_str(state.lowcut_hz)}"
+        cal_lc = calib.get("calib_lowcut")
+        if cal_lc is not None and cal_lc != state.lowcut_hz:
+            lc_str += f"（校正時: {lowcut_str(cal_lc)}）"
+        draw_text(surf, lc_str, f_small, C_DIM, W // 2, y, anchor="midtop")
         y += 26
 
         raw  = state.current_raw
@@ -674,6 +736,8 @@ def draw_operator(surf, state: State, fonts):
         line("[R] 最初からやり直し", 40, y, C_DIM)
         y += 26
         line(f"[D] 入力デバイスを変更（現在: {state.device_label}）", 40, y, C_DIM)
+        y += 26
+        line(f"ローカット: {lowcut_str(state.lowcut_hz)}（暗騒音設定画面で変更）", 40, y, C_DIM)
 
     elif scr == "calib_confirm":
         c = state.confirm_calib
@@ -701,14 +765,15 @@ def draw_operator(surf, state: State, fonts):
         draw_text(surf, "ホールが静かな状態で実施してください", f_small, C_DIM, 40, y + 30)
         y += 60
 
+        ns = state.nf_settings
         ROWS = [
-            ("計測時間",   "duration",   "秒",   3, 60,  1),
-            ("パーセンタイル", "percentile", "",  5, 50,  5),
-            ("マージン",   "margin",     "dB",  0, 20,  1),
+            ("ローカット",     lowcut_str(state.lowcut_hz)),
+            ("計測時間",       f"{ns['duration']} 秒"),
+            ("パーセンタイル", f"{ns['percentile']} "),
+            ("マージン",       f"{ns['margin']} dB"),
         ]
 
-        for i, (label, key, unit, lo, hi, step) in enumerate(ROWS):
-            val  = state.nf_settings[key]
+        for i, (label, val) in enumerate(ROWS):
             sel  = (i == state.nf_cursor)
             fg   = C_ACCENT if sel else C_TEXT
             bg_r = pygame.Rect(36, y - 4, W - 72, 36)
@@ -716,11 +781,20 @@ def draw_operator(surf, state: State, fonts):
                 pygame.draw.rect(surf, (28, 28, 28), bg_r, border_radius=6)
                 pygame.draw.rect(surf, C_ACCENT, bg_r, 1, border_radius=6)
             cursor_mark = "▶ " if sel else "  "
-            draw_text(surf, f"{cursor_mark}{label}", f_body, fg, 48, y + 4)
-            draw_text(surf, f"{val} {unit}", f_mono, fg, W - 80, y + 4, anchor="midright")
+            # 枠の縦中央に揃える（ラベル・値・矢印で anchor を統一）
+            cy = bg_r.centery
+            draw_text(surf, f"{cursor_mark}{label}", f_body, fg, 48, cy, anchor="midleft")
+            draw_text(surf, val, f_mono, fg, W - 100, cy, anchor="midright")
             draw_text(surf, f"← →", f_small, C_DIM if not sel else C_ACCENT,
-                      W - 60, y + 4, anchor="midleft")
+                      W - 48, cy, anchor="midright")
             y += 42
+            if i == 0:
+                # 校正は純音（1 kHz / 440 Hz）で行うので校正時のフィルタ差は通常影響しない。参考表示のみ
+                cal_lc = (state.calib or {}).get("calib_lowcut")
+                if cal_lc is not None and cal_lc != state.lowcut_hz:
+                    draw_text(surf, f"（参考）校正時のローカット: {lowcut_str(cal_lc)}",
+                              f_small, C_DIM, 64, y - 6)
+                    y += 18
 
         y += 16
         line("[Enter] 測定開始", 40, y, C_OK);   y += 26
@@ -1163,8 +1237,10 @@ def handle_key(event, state: State, audio: AudioEngine):
 
     elif scr == "calib_confirm":
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_s):
-            # 校正値は入力経路ごとに異なるので、どのデバイスで取った値かを残す
-            state.calib = dict(state.confirm_calib, device=state.device_label)
+            # 校正値は入力経路ごとに異なるので、どのデバイスで取った値かを残す。
+            # lowcut は現在の設定、calib_lowcut は校正時の設定（参考表示用）
+            state.calib = dict(state.confirm_calib, device=state.device_label,
+                               lowcut=state.lowcut_hz, calib_lowcut=state.lowcut_hz)
             save_calib(state.calib)
             state.screen = "noise_setup"
             audio.start()
@@ -1173,17 +1249,25 @@ def handle_key(event, state: State, audio: AudioEngine):
         return True
 
     elif scr == "noise_setup":
-        ROWS = ["duration", "percentile", "margin"]
+        ROWS = ["lowcut", "duration", "percentile", "margin"]
         LIMITS = {"duration": (3, 60, 1), "percentile": (5, 50, 5), "margin": (0, 20, 1)}
+        right = key in (pygame.K_RIGHT, pygame.K_EQUALS, pygame.K_PLUS)
+        left  = key in (pygame.K_LEFT, pygame.K_MINUS)
         if key == pygame.K_UP:
-            state.nf_cursor = (state.nf_cursor - 1) % 3
+            state.nf_cursor = (state.nf_cursor - 1) % len(ROWS)
         elif key == pygame.K_DOWN:
-            state.nf_cursor = (state.nf_cursor + 1) % 3
-        elif key in (pygame.K_RIGHT, pygame.K_EQUALS, pygame.K_PLUS):
+            state.nf_cursor = (state.nf_cursor + 1) % len(ROWS)
+        elif ROWS[state.nf_cursor] == "lowcut" and (right or left):
+            i = LOWCUT_OPTIONS.index(state.lowcut_hz) + (1 if right else -1)
+            state.lowcut_hz = LOWCUT_OPTIONS[max(0, min(len(LOWCUT_OPTIONS) - 1, i))]
+            if state.calib:
+                state.calib["lowcut"] = state.lowcut_hz
+                save_calib(state.calib)
+        elif right:
             k = ROWS[state.nf_cursor]
             lo, hi, step = LIMITS[k]
             state.nf_settings[k] = min(hi, state.nf_settings[k] + step)
-        elif key in (pygame.K_LEFT, pygame.K_MINUS):
+        elif left:
             k = ROWS[state.nf_cursor]
             lo, hi, step = LIMITS[k]
             state.nf_settings[k] = max(lo, state.nf_settings[k] - step)
@@ -1344,6 +1428,8 @@ def main():
     # 校正ファイルを先に読み、デバイス選択の決定後に startup / calib_step1 へ進む。
     # 音声はデバイス確定時に開始する（校正画面のライブ入力表示に使う）。
     state.calib   = load_calib()
+    if state.calib and state.calib.get("lowcut") in LOWCUT_OPTIONS:
+        state.lowcut_hz = state.calib["lowcut"]
     state.devices = list_input_devices()
     _set_dev_cursor(state, default_device_pos(state.devices))
     state.screen  = "device_select"
@@ -1402,7 +1488,7 @@ def _handle_device_click(event, state: State, size):
 def _draw_overlay(surf, state: State, fonts):
     """Semi-transparent operator info panel (Tab to toggle)."""
     W, H = surf.get_size()
-    panel_w, panel_h = 380, 298
+    panel_w, panel_h = 380, 320
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((10, 10, 10, 210))
 
@@ -1425,6 +1511,7 @@ def _draw_overlay(surf, state: State, fonts):
         (f"RAW  {state.current_raw:+.1f} dBFS",  (160, 160, 160)),
         (f"SPL  {state.current_spl:.1f} dB",      (210, 210, 210)),
         (gate_str,                                (100, 180, 100) if not state.nf_frozen else (180, 100, 100)),
+        (f"LOW-CUT {state.lowcut_hz} Hz" if state.lowcut_hz else "LOW-CUT off", (160, 160, 160)),
         (f"MIC  {mode_str}",                      mode_col),
         (f"     {dev_str}",                       (120, 120, 120)),
         (f"VIEW {aud_mode_str}モード",            (160, 160, 160)),
