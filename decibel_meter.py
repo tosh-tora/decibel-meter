@@ -781,10 +781,12 @@ def draw_operator(surf, state: State, fonts):
                 pygame.draw.rect(surf, (28, 28, 28), bg_r, border_radius=6)
                 pygame.draw.rect(surf, C_ACCENT, bg_r, 1, border_radius=6)
             cursor_mark = "▶ " if sel else "  "
-            draw_text(surf, f"{cursor_mark}{label}", f_body, fg, 48, y + 4)
-            draw_text(surf, val, f_mono, fg, W - 80, y + 4, anchor="midright")
+            # 枠の縦中央に揃える（ラベル・値・矢印で anchor を統一）
+            cy = bg_r.centery
+            draw_text(surf, f"{cursor_mark}{label}", f_body, fg, 48, cy, anchor="midleft")
+            draw_text(surf, val, f_mono, fg, W - 100, cy, anchor="midright")
             draw_text(surf, f"← →", f_small, C_DIM if not sel else C_ACCENT,
-                      W - 60, y + 4, anchor="midleft")
+                      W - 48, cy, anchor="midright")
             y += 42
             if i == 0:
                 # 校正は純音（1 kHz / 440 Hz）で行うので校正時のフィルタ差は通常影響しない。参考表示のみ
