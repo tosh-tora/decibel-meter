@@ -1413,8 +1413,6 @@ def main():
         "body":     sf(FONT_NAMES, 18),
         "small":    sf(FONT_NAMES, 14),
         "mono":     sf(MONO_NAMES, 16),
-        "aud_num":  sf(FONT_NAMES, 260, bold=True),
-        "aud_unit": sf(FONT_NAMES, 80),
     }
 
     # ── Single window ────────────────────────────────────────

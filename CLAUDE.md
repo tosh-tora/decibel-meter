@@ -108,12 +108,13 @@ noise_setup → noise_measure → main
 ## フォント
 
 `meiryo,yu gothic,ms gothic` を優先して日本語表示。  
-観客画面の数字・単位は `_get_sysf` で動的サイズ（「フォントスケール」参照）。`fonts` の `aud_num` / `aud_unit` は未使用。
+観客画面の数字・単位は `_get_sysf` で動的サイズ（「フォントスケール」参照）。
 
 ## ファイル構成
 
 ```
 decibel_meter.py         # アプリ本体（全ロジック）
+decibel_meter.bat        # GUI 起動用（.venv があればそれを、なければ PATH の pythonw を使う。Shift_JIS/CRLF）
 requirements.txt         # 依存パッケージ
 calibration.json         # キャリブレーション保存（自動生成、校正時のデバイス名も保存）
 specification.md         # 企画仕様書
