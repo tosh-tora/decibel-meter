@@ -1397,7 +1397,25 @@ def _start_nf_measure(state: State):
 # ─────────────────────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────────────────────
+def _enable_dpi_awareness():
+    """Windows の表示スケール（125%/150% など）で、DPI 非対応アプリとして
+    低解像度で描画→拡大表示されるのを防ぐ。pygame.init() より前に呼ぶ。
+    これでウィンドウサイズ・最大化時の解像度が実ピクセルになる。"""
+    if os.name != "nt":
+        return
+    os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)   # Per-monitor (Win 8.1+)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()        # System DPI (Vista+)
+    except Exception:
+        pass
+
+
 def main():
+    _enable_dpi_awareness()
     pygame.init()
 
     # ── Fonts ────────────────────────────────────────────────
@@ -1416,7 +1434,7 @@ def main():
     }
 
     # ── Single window ────────────────────────────────────────
-    screen = pygame.display.set_mode((1024, 640), pygame.RESIZABLE)
+    screen = pygame.display.set_mode((1280, 800), pygame.RESIZABLE)
     pygame.display.set_caption("Decibel Meter")
 
     # ── State & Audio ─────────────────────────────────────────
