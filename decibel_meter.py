@@ -1416,7 +1416,7 @@ def main():
     }
 
     # ── Single window ────────────────────────────────────────
-    screen = pygame.display.set_mode((1024, 640), pygame.RESIZABLE)
+    screen = pygame.display.set_mode((1280, 800), pygame.RESIZABLE)
     pygame.display.set_caption("Decibel Meter")
 
     # ── State & Audio ─────────────────────────────────────────
